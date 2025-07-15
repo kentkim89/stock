@@ -208,21 +208,27 @@ with tab3:
         hist = yf.download(selected_ticker, period="1y")
         return_pct, back_hist = backtest_strategy(hist, rsi_period, rsi_oversold, rsi_overbought, 50, 200)
         st.metric("수익률", f"{return_pct:.2f}%")
+        back_hist_plot = back_hist.reset_index()  # 추가: reset_index로 Date 열 생성
         fig, ax = plt.subplots(figsize=(10, 5))
-        sns.lineplot(x=back_hist.index, y=back_hist['Close'], label='Price', ax=ax)  # 변경: x/y 명시
-        sns.lineplot(x=back_hist.index, y=back_hist['SMA_short'], label='SMA50', ax=ax)  # 변경: x/y 명시
-        sns.lineplot(x=back_hist.index, y=back_hist['SMA_long'], label='SMA200', ax=ax)  # 변경: x/y 명시
+        sns.lineplot(data=back_hist_plot, x='Date', y='Close', label='Price', ax=ax)  # 변경: data, x, y 형식
+        sns.lineplot(data=back_hist_plot, x='Date', y='SMA_short', label='SMA50', ax=ax)
+        sns.lineplot(data=back_hist_plot, x='Date', y='SMA_long', label='SMA200', ax=ax)
         st.pyplot(fig)
 
 with tab4:
     st.subheader("차트 분석")
     if selected_ticker:
+        hist = yf.download(selected_ticker, period="1y")
+        hist['SMA50'] = calculate_sma(hist, 50)  # 추가: DataFrame에 SMA/RSI 열 추가
+        hist['SMA200'] = calculate_sma(hist, 200)
+        hist['RSI'] = calculate_rsi(hist)
+        hist_plot = hist.reset_index()  # 추가: reset_index로 Date 열 생성
         fig, ax1 = plt.subplots(figsize=(10, 5))
-        sns.lineplot(x=hist.index, y=hist['Close'], label='Price', color='blue', ax=ax1)  # 변경: x/y 명시
-        sns.lineplot(x=hist.index, y=calculate_sma(hist, 50), label='SMA50', color='green', ax=ax1)  # 변경: x/y 명시
-        sns.lineplot(x=hist.index, y=calculate_sma(hist, 200), label='SMA200', color='red', ax=ax1)  # 변경: x/y 명시
+        sns.lineplot(data=hist_plot, x='Date', y='Close', label='Price', color='blue', ax=ax1)  # 변경: data, x, y 형식
+        sns.lineplot(data=hist_plot, x='Date', y='SMA50', label='SMA50', color='green', ax=ax1)
+        sns.lineplot(data=hist_plot, x='Date', y='SMA200', label='SMA200', color='red', ax=ax1)
         ax2 = ax1.twinx()
-        sns.lineplot(x=hist.index, y=calculate_rsi(hist), label='RSI', color='purple', style=True, dashes=[(2,2)], ax=ax2)  # 변경: x/y 명시
+        sns.lineplot(data=hist_plot, x='Date', y='RSI', label='RSI', color='purple', linestyle='--', ax=ax2)  # 변경: linestyle='--'
         st.pyplot(fig)
 
 # 푸터 - unchanged
