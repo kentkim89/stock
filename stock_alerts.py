@@ -215,7 +215,7 @@ with tab1:
             for ticker, row in volume_increased_stocks.iterrows():
                 st.write(f"📈 {ticker} ({row['Korean Name']}): {row['Volume Change (%)']:.2f}% 증가")
 
-        buy_signals = df[(df['Change (%)'] < 0) & (df['Volume Change (%)'] > volume_threshold) & (df['RSI'] < rsi_oversold) & (df['SMA50'] > df['SMA200'])]
+        buy_signals = df[(df['Change (%)'] < 0) & (df['Volume Change (%)'] > 0) & (df['RSI'] < rsi_oversold) & (df['SMA50'] > df['SMA200'])]  # 변경: 조건 완화 (거래량 증가 >0, 가격 하락만)
         if not buy_signals.empty:
             st.markdown('<div class="warning">💰 매수 기회 알림!</div>', unsafe_allow_html=True)
             for ticker, row in buy_signals.iterrows():
@@ -224,6 +224,8 @@ with tab1:
                 st.write(f"🟢 {ticker} ({row['Korean Name']}): RSI {row['RSI']:.2f}, 예측 {pred_change:.2f}%")
                 if sender_email and receiver_email and sender_pw:
                     send_email(sender_email, sender_pw, receiver_email, f"{ticker} 매수", f"예측: {pred_change:.2f}%")
+        else:
+            st.info("현재 매수 신호 없음. 시장 상황을 모니터링하세요.")
 
         sell_signals = df[(df['Change (%)'] > 0) & (df['RSI'] > rsi_overbought) & (df['SMA50'] < df['SMA200']) | (df['Change (%)'] < stop_loss_threshold)]
         if not sell_signals.empty:
@@ -232,6 +234,13 @@ with tab1:
                 st.write(f"🔴 {ticker} ({row['Korean Name']}): RSI {row['RSI']:.2f}")
                 if sender_email and receiver_email and sender_pw:
                     send_email(sender_email, sender_pw, receiver_email, f"{ticker} 매도", "매도 타이밍!")
+        else:
+            st.info("현재 매도 신호 없음. 보유 추천.")
+
+        # 요약 총평 추가
+        st.subheader("알림 요약")
+        summary = f"하락 주식: {len(declined_stocks)}개, 거래량 증가: {len(volume_increased_stocks)}개, 매수 신호: {len(buy_signals)}개, 매도 신호: {len(sell_signals)}개"
+        st.write(summary)
 
 with tab2:
     st.subheader("포트폴리오 관리")
@@ -249,6 +258,15 @@ with tab2:
     else:
         st.warning("데이터가 없습니다. 스크리닝을 확인하세요.")
 
+        # 요약 총평 추가
+        st.subheader("포트폴리오 요약")
+        if portfolio:
+            changes = [df.loc[tick.strip(), 'Change (%)'] for tick in portfolio if tick.strip() in df.index]
+            avg_change = np.mean(changes) if changes else 0
+            st.write(f"평균 변화율: {avg_change:.2f}%, 보유 종목 수: {len(portfolio)}개")
+        else:
+            st.write("포트폴리오 비어 있음.")
+
 with tab3:
     st.subheader("백테스트 결과")
     selected_ticker = st.selectbox("주식 선택", undervalued_stocks + portfolio)
@@ -263,6 +281,10 @@ with tab3:
         ax.legend()
         st.pyplot(fig)
 
+        # 요약 총평 추가
+        st.subheader("백테스트 요약")
+        st.write(f"{selected_ticker} 전략 수익률: {return_pct:.2f}% (1년 기간). RSI/SMA 기반 전략입니다.")
+
 with tab4:
     st.subheader("차트 분석")
     if selected_ticker:
@@ -276,6 +298,10 @@ with tab4:
         ax1.legend(loc='upper left')
         ax2.legend(loc='upper right')
         st.pyplot(fig)
+
+        # 요약 총평 추가
+        st.subheader("차트 요약")
+        st.write(f"{selected_ticker} 가격 추세: SMA 크로스오버와 RSI 과매도/과매수 확인. 현재 RSI: {calculate_rsi(hist).iloc[-1]:.2f}")
 
 # 푸터 - unchanged
 st.markdown("---")
