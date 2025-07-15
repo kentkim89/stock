@@ -141,17 +141,32 @@ st.write("저평가 주식 스크리닝 중... ⏳")
 progress_bar = st.progress(0)
 sp500 = get_sp500_tickers(max_screen_stocks)
 undervalued_stocks = []
+company_names = {}  # 추가: 회사명 저장
+korean_names = {  # 추가: 한글 예시 딕셔너리 (웹 검색 기반, 전체 아님)
+    'GOOG': '알파벳 (C종)',
+    'MO': '알트리아',
+    'AMZN': '아마존',
+    'AMCR': 'Amcor',
+    # ... 추가로 확장 가능
+}
 for i, ticker in enumerate(sp500):
     try:
         stock = yf.Ticker(ticker)
         info = stock.info
+        english_name = info.get('longName', 'N/A')  # 추가: 영어 회사명
         if 'forwardPE' in info and info['forwardPE'] < per_threshold:
             undervalued_stocks.append(ticker)
+            company_names[ticker] = english_name
     except:
         pass
-    time.sleep(0.3)  # 변경: sleep 0.3초로 줄여 속도 향상
-    progress_bar.progress((i + 1) / len(sp500))  # 진행률 업데이트
+    time.sleep(0.2)  # 변경: sleep 줄여 속도 향상 (rate limit 주의)
+    progress_bar.progress((i + 1) / len(sp500))
 st.success(f"스크리닝된 주식: {len(undervalued_stocks)}개 (상위 10: {', '.join(undervalued_stocks[:10])} ...)")
+
+# 데이터프레임에 회사명 추가 (표시용)
+if not df.empty:
+    df['English Name'] = df.index.map(company_names.get)
+    df['Korean Name'] = df.index.map(korean_names.get)  # 한글 (부분)
 
 # 탭 구조 - unchanged
 tab1, tab2, tab3, tab4 = st.tabs(["🔔 알림", "💼 포트폴리오", "📊 백테스트", "📉 차트"])
