@@ -11,7 +11,6 @@ import time
 import smtplib
 from email.mime.text import MIMEText
 import ssl
-from multiprocessing import cpu_count  # Kept but not used for parallel to avoid rate limits
 
 # Streamlit 테마 커스터마이징 (화려한 UI) - unchanged
 st.set_page_config(page_title="주식 알림 대시보드", page_icon="📈", layout="wide")
@@ -42,30 +41,17 @@ def calculate_rsi(data, period=14):
 def calculate_sma(data, window):
     return data['Close'].rolling(window=window).mean()
 
-# 변경: multiprocessing 제거, sequential loop with delay for rate limit avoidance
-@st.cache_data(ttl=86400)  # 변경: 캐시 TTL을 1일로 증가하여 반복 호출 줄임
-def get_undervalued_stocks(per_threshold, max_screen_stocks):
+# 변경: get_undervalued_stocks 캐싱 제거, 메인에서 루프 실행으로 진행률 표시
+def get_sp500_tickers(max_screen_stocks):
     url = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
     tables = pd.read_html(url)
-    sp500 = tables[0]['Symbol'].tolist()[:max_screen_stocks]  # 변경: max_screen_stocks로 제한
-    undervalued = []
-    for ticker in sp500:
-        try:
-            stock = yf.Ticker(ticker)
-            info = stock.info
-            if 'forwardPE' in info and info['forwardPE'] < per_threshold:
-                undervalued.append(ticker)
-        except:
-            pass
-        time.sleep(0.5)  # 변경: 각 호출 사이 0.5초 지연 추가 (rate limit 방지)
-    return undervalued
+    return tables[0]['Symbol'].tolist()[:max_screen_stocks]
 
-# 변경: yf.download으로 bulk fetch (하나의 호출로 모든 티커 데이터 가져옴, threads=False로 sequential)
 @st.cache_data(ttl=300)
 def get_stock_data(tickers, rsi_period, sma_short=50, sma_long=200):
     if not tickers:
         return pd.DataFrame()
-    multi_data = yf.download(tickers, period="1y", group_by='ticker', auto_adjust=True, threads=False)  # 변경: bulk download, threads=False
+    multi_data = yf.download(tickers, period="1y", group_by='ticker', auto_adjust=True, threads=False)
     data = {}
     for ticker in tickers:
         if ticker in multi_data.columns.levels[0]:
@@ -134,11 +120,11 @@ def backtest_strategy(hist, rsi_period, rsi_oversold, rsi_overbought, sma_short,
 # 헤더 - unchanged
 st.header("📈 주식 알림 대시보드", divider='rainbow')
 
-# 사이드바 설정 - 추가: max_screen_stocks 슬라이더 for rate limit control
+# 사이드바 설정 - default max_screen_stocks를 50으로 낮춤
 with st.sidebar:
     st.title("⚙️ 설정")
     portfolio = st.text_input("보유 주식 티커 (콤마로 구분) 📊", "").split(',')
-    max_screen_stocks = st.slider("스크리닝 최대 주식 수 (rate limit 방지)", 50, 500, 100)  # 추가: 사용자 조정 가능
+    max_screen_stocks = st.slider("스크리닝 최대 주식 수 (rate limit 방지)", 10, 200, 50)
     per_threshold = st.slider("저평가 PER 임계값", 5.0, 30.0, 15.0, help="Forward PE 기준")
     volume_threshold = st.slider("거래량 증가 (%)", 10, 200, 50)
     rsi_period = st.slider("RSI 기간", 5, 30, 14)
@@ -150,20 +136,28 @@ with st.sidebar:
     receiver_email = st.text_input("수신자 이메일")
     auto_refresh = st.toggle("실시간 모니터링 (1분) 🔄", value=True)
 
-# 저평가 주식 로딩 - unchanged
-with st.spinner("저평가 주식 스크리닝 중... ⏳"):
-    undervalued_stocks = get_undervalued_stocks(per_threshold, max_screen_stocks)
+# 저평가 주식 스크리닝 with 진행률 바
+st.write("저평가 주식 스크리닝 중... ⏳")
+progress_bar = st.progress(0)
+sp500 = get_sp500_tickers(max_screen_stocks)
+undervalued_stocks = []
+for i, ticker in enumerate(sp500):
+    try:
+        stock = yf.Ticker(ticker)
+        info = stock.info
+        if 'forwardPE' in info and info['forwardPE'] < per_threshold:
+            undervalued_stocks.append(ticker)
+    except:
+        pass
+    time.sleep(0.3)  # 변경: sleep 0.3초로 줄여 속도 향상
+    progress_bar.progress((i + 1) / len(sp500))  # 진행률 업데이트
 st.success(f"스크리닝된 주식: {len(undervalued_stocks)}개 (상위 10: {', '.join(undervalued_stocks[:10])} ...)")
 
-# 탭 구조 - unchanged, but df fetch uses updated function
+# 탭 구조 - unchanged
 tab1, tab2, tab3, tab4 = st.tabs(["🔔 알림", "💼 포트폴리오", "📊 백테스트", "📉 차트"])
 
 with tab1:
     st.subheader("실시간 알림")
-    progress = st.progress(0)
-    for i in range(100):
-        time.sleep(0.01)
-        progress.progress(i + 1)
     df = get_stock_data(undervalued_stocks + [p.strip() for p in portfolio if p.strip()], rsi_period)
     if not df.empty:
         st.dataframe(df.style.background_gradient(cmap='viridis'))
@@ -184,7 +178,7 @@ with tab1:
         if not buy_signals.empty:
             st.markdown('<div class="warning">💰 매수 기회 알림!</div>', unsafe_allow_html=True)
             for ticker, row in buy_signals.iterrows():
-                hist = yf.download(ticker, period="1y")  # 개별 hist for predict (rate limit ok, few calls)
+                hist = yf.download(ticker, period="1y")
                 predicted, pred_change = predict_price(hist)
                 st.write(f"🟢 {ticker}: RSI {row['RSI']:.2f}, 예측 {pred_change:.2f}%")
                 if sender_email and receiver_email and sender_pw:
@@ -215,20 +209,20 @@ with tab3:
         return_pct, back_hist = backtest_strategy(hist, rsi_period, rsi_oversold, rsi_overbought, 50, 200)
         st.metric("수익률", f"{return_pct:.2f}%")
         fig, ax = plt.subplots(figsize=(10, 5))
-        sns.lineplot(data=back_hist['Close'], label='Price', ax=ax)
-        sns.lineplot(data=back_hist['SMA_short'], label='SMA50', ax=ax)
-        sns.lineplot(data=back_hist['SMA_long'], label='SMA200', ax=ax)
+        sns.lineplot(x=back_hist.index, y=back_hist['Close'], label='Price', ax=ax)  # 변경: x/y 명시
+        sns.lineplot(x=back_hist.index, y=back_hist['SMA_short'], label='SMA50', ax=ax)  # 변경: x/y 명시
+        sns.lineplot(x=back_hist.index, y=back_hist['SMA_long'], label='SMA200', ax=ax)  # 변경: x/y 명시
         st.pyplot(fig)
 
 with tab4:
     st.subheader("차트 분석")
     if selected_ticker:
         fig, ax1 = plt.subplots(figsize=(10, 5))
-        sns.lineplot(data=hist['Close'], label='Price', color='blue', ax=ax1)
-        sns.lineplot(data=calculate_sma(hist, 50), label='SMA50', color='green', ax=ax1)
-        sns.lineplot(data=calculate_sma(hist, 200), label='SMA200', color='red', ax=ax1)
+        sns.lineplot(x=hist.index, y=hist['Close'], label='Price', color='blue', ax=ax1)  # 변경: x/y 명시
+        sns.lineplot(x=hist.index, y=calculate_sma(hist, 50), label='SMA50', color='green', ax=ax1)  # 변경: x/y 명시
+        sns.lineplot(x=hist.index, y=calculate_sma(hist, 200), label='SMA200', color='red', ax=ax1)  # 변경: x/y 명시
         ax2 = ax1.twinx()
-        sns.lineplot(data=calculate_rsi(hist), label='RSI', color='purple', style=True, dashes=[(2,2)], ax=ax2)
+        sns.lineplot(x=hist.index, y=calculate_rsi(hist), label='RSI', color='purple', style=True, dashes=[(2,2)], ax=ax2)  # 변경: x/y 명시
         st.pyplot(fig)
 
 # 푸터 - unchanged
