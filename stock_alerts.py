@@ -3,7 +3,7 @@ import yfinance as yf
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
-import seaborn as sns  # matplotlib 더 화려하게 위해 추가 (requirements에 matplotlib 이미 있음)
+import seaborn as sns
 from sklearn.linear_model import LinearRegression
 from sklearn.model_selection import train_test_split
 from datetime import datetime, timedelta
@@ -11,13 +11,13 @@ import time
 import smtplib
 from email.mime.text import MIMEText
 import ssl
-from multiprocessing import Pool, cpu_count
+from multiprocessing import cpu_count  # Kept but not used for parallel to avoid rate limits
 
-# Streamlit 테마 커스터마이징 (화려한 UI)
+# Streamlit 테마 커스터마이징 (화려한 UI) - unchanged
 st.set_page_config(page_title="주식 알림 대시보드", page_icon="📈", layout="wide")
 st.markdown("""
     <style>
-    .stApp { background-color: #f0f8ff; }  /* 라이트 배경 */
+    .stApp { background-color: #f0f8ff; }
     .stButton>button { background-color: #4CAF50; color: white; border-radius: 10px; }
     .stSlider .st-ae { color: #2196F3; }
     .stTabs [data-baseweb="tab"] { font-weight: bold; }
@@ -27,8 +27,7 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-# 함수들 (기존 유지, seaborn으로 그래프 화려하게)
-sns.set_style("whitegrid")  # 그래프 스타일 화려하게
+sns.set_style("whitegrid")
 
 def calculate_rsi(data, period=14):
     delta = data['Close'].diff()
@@ -43,53 +42,55 @@ def calculate_rsi(data, period=14):
 def calculate_sma(data, window):
     return data['Close'].rolling(window=window).mean()
 
-def filter_stock(ticker_per):
-    ticker, per_threshold = ticker_per
-    try:
-        stock = yf.Ticker(ticker)
-        info = stock.info
-        if 'forwardPE' in info and info['forwardPE'] < per_threshold:
-            return ticker
-    except:
-        pass
-    return None
-
-@st.cache_data(ttl=3600)
-def get_undervalued_stocks(per_threshold):
+# 변경: multiprocessing 제거, sequential loop with delay for rate limit avoidance
+@st.cache_data(ttl=86400)  # 변경: 캐시 TTL을 1일로 증가하여 반복 호출 줄임
+def get_undervalued_stocks(per_threshold, max_screen_stocks):
     url = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
     tables = pd.read_html(url)
-    sp500 = tables[0]['Symbol'].tolist()
-    with Pool(cpu_count()) as p:
-        undervalued = p.map(filter_stock, [(t, per_threshold) for t in sp500])
-    return [t for t in undervalued if t]
+    sp500 = tables[0]['Symbol'].tolist()[:max_screen_stocks]  # 변경: max_screen_stocks로 제한
+    undervalued = []
+    for ticker in sp500:
+        try:
+            stock = yf.Ticker(ticker)
+            info = stock.info
+            if 'forwardPE' in info and info['forwardPE'] < per_threshold:
+                undervalued.append(ticker)
+        except:
+            pass
+        time.sleep(0.5)  # 변경: 각 호출 사이 0.5초 지연 추가 (rate limit 방지)
+    return undervalued
 
+# 변경: yf.download으로 bulk fetch (하나의 호출로 모든 티커 데이터 가져옴, threads=False로 sequential)
 @st.cache_data(ttl=300)
 def get_stock_data(tickers, rsi_period, sma_short=50, sma_long=200):
+    if not tickers:
+        return pd.DataFrame()
+    multi_data = yf.download(tickers, period="1y", group_by='ticker', auto_adjust=True, threads=False)  # 변경: bulk download, threads=False
     data = {}
     for ticker in tickers:
-        stock = yf.Ticker(ticker)
-        hist = stock.history(period="1y")
-        if len(hist) >= max(rsi_period + 1, sma_long):
-            prev_close = hist['Close'].iloc[-2]
-            current_close = hist['Close'].iloc[-1]
-            change = (current_close - prev_close) / prev_close * 100
-            prev_volume = hist['Volume'].iloc[-2]
-            current_volume = hist['Volume'].iloc[-1]
-            volume_change = (current_volume - prev_volume) / prev_volume * 100 if prev_volume != 0 else 0
-            rsi = calculate_rsi(hist, rsi_period).iloc[-1]
-            sma50 = calculate_sma(hist, sma_short).iloc[-1]
-            sma200 = calculate_sma(hist, sma_long).iloc[-1]
-            data[ticker] = {
-                'Current Price': current_close,
-                'Previous Close': prev_close,
-                'Change (%)': change,
-                'Current Volume': current_volume,
-                'Previous Volume': prev_volume,
-                'Volume Change (%)': volume_change,
-                'RSI': rsi,
-                'SMA50': sma50,
-                'SMA200': sma200
-            }
+        if ticker in multi_data.columns.levels[0]:
+            hist = multi_data[ticker].dropna()
+            if len(hist) >= max(rsi_period + 1, sma_long):
+                prev_close = hist['Close'].iloc[-2]
+                current_close = hist['Close'].iloc[-1]
+                change = (current_close - prev_close) / prev_close * 100
+                prev_volume = hist['Volume'].iloc[-2]
+                current_volume = hist['Volume'].iloc[-1]
+                volume_change = (current_volume - prev_volume) / prev_volume * 100 if prev_volume != 0 else 0
+                rsi = calculate_rsi(hist, rsi_period).iloc[-1]
+                sma50 = calculate_sma(hist, sma_short).iloc[-1]
+                sma200 = calculate_sma(hist, sma_long).iloc[-1]
+                data[ticker] = {
+                    'Current Price': current_close,
+                    'Previous Close': prev_close,
+                    'Change (%)': change,
+                    'Current Volume': current_volume,
+                    'Previous Volume': prev_volume,
+                    'Volume Change (%)': volume_change,
+                    'RSI': rsi,
+                    'SMA50': sma50,
+                    'SMA200': sma200
+                }
     return pd.DataFrame.from_dict(data, orient='index')
 
 def predict_price(hist):
@@ -130,13 +131,14 @@ def backtest_strategy(hist, rsi_period, rsi_oversold, rsi_overbought, sma_short,
     cumulative_return = (1 + hist['Strategy_Return']).cumprod() - 1
     return cumulative_return.iloc[-1] * 100, hist
 
-# 헤더
+# 헤더 - unchanged
 st.header("📈 주식 알림 대시보드", divider='rainbow')
 
-# 사이드바 설정 (화려한 UI)
+# 사이드바 설정 - 추가: max_screen_stocks 슬라이더 for rate limit control
 with st.sidebar:
     st.title("⚙️ 설정")
     portfolio = st.text_input("보유 주식 티커 (콤마로 구분) 📊", "").split(',')
+    max_screen_stocks = st.slider("스크리닝 최대 주식 수 (rate limit 방지)", 50, 500, 100)  # 추가: 사용자 조정 가능
     per_threshold = st.slider("저평가 PER 임계값", 5.0, 30.0, 15.0, help="Forward PE 기준")
     volume_threshold = st.slider("거래량 증가 (%)", 10, 200, 50)
     rsi_period = st.slider("RSI 기간", 5, 30, 14)
@@ -148,12 +150,12 @@ with st.sidebar:
     receiver_email = st.text_input("수신자 이메일")
     auto_refresh = st.toggle("실시간 모니터링 (1분) 🔄", value=True)
 
-# 저평가 주식 로딩 (프로그레스 바)
+# 저평가 주식 로딩 - unchanged
 with st.spinner("저평가 주식 스크리닝 중... ⏳"):
-    undervalued_stocks = get_undervalued_stocks(per_threshold)
+    undervalued_stocks = get_undervalued_stocks(per_threshold, max_screen_stocks)
 st.success(f"스크리닝된 주식: {len(undervalued_stocks)}개 (상위 10: {', '.join(undervalued_stocks[:10])} ...)")
 
-# 탭 구조 (화려한 네비게이션)
+# 탭 구조 - unchanged, but df fetch uses updated function
 tab1, tab2, tab3, tab4 = st.tabs(["🔔 알림", "💼 포트폴리오", "📊 백테스트", "📉 차트"])
 
 with tab1:
@@ -164,7 +166,7 @@ with tab1:
         progress.progress(i + 1)
     df = get_stock_data(undervalued_stocks + [p.strip() for p in portfolio if p.strip()], rsi_period)
     if not df.empty:
-        st.dataframe(df.style.background_gradient(cmap='viridis'))  # 화려한 데이터프레임 컬러 그라데이션
+        st.dataframe(df.style.background_gradient(cmap='viridis'))
 
         declined_stocks = df[df['Change (%)'] < 0]
         if not declined_stocks.empty:
@@ -182,7 +184,7 @@ with tab1:
         if not buy_signals.empty:
             st.markdown('<div class="warning">💰 매수 기회 알림!</div>', unsafe_allow_html=True)
             for ticker, row in buy_signals.iterrows():
-                hist = yf.Ticker(ticker).history(period="1y")
+                hist = yf.download(ticker, period="1y")  # 개별 hist for predict (rate limit ok, few calls)
                 predicted, pred_change = predict_price(hist)
                 st.write(f"🟢 {ticker}: RSI {row['RSI']:.2f}, 예측 {pred_change:.2f}%")
                 if sender_email and receiver_email and sender_pw:
@@ -209,7 +211,7 @@ with tab3:
     st.subheader("백테스트 결과")
     selected_ticker = st.selectbox("주식 선택", undervalued_stocks + portfolio)
     if selected_ticker:
-        hist = yf.Ticker(selected_ticker).history(period="1y")
+        hist = yf.download(selected_ticker, period="1y")
         return_pct, back_hist = backtest_strategy(hist, rsi_period, rsi_oversold, rsi_overbought, 50, 200)
         st.metric("수익률", f"{return_pct:.2f}%")
         fig, ax = plt.subplots(figsize=(10, 5))
@@ -229,11 +231,11 @@ with tab4:
         sns.lineplot(data=calculate_rsi(hist), label='RSI', color='purple', style=True, dashes=[(2,2)], ax=ax2)
         st.pyplot(fig)
 
-# 푸터
+# 푸터 - unchanged
 st.markdown("---")
 st.info("데이터: Yahoo Finance | 2025 개발 by Grok")
 
-# 실시간 모니터링
+# 실시간 모니터링 - unchanged
 if auto_refresh:
     time.sleep(60)
     st.rerun()
