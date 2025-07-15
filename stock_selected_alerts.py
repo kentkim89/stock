@@ -307,7 +307,7 @@ with tab4:
         # 요약 총평 추가
         st.subheader("차트 요약")
         current_rsi = calculate_rsi(hist).iloc[-1]
-        current_rsi_str = f"{current_rsi:.2f}" if not pd.isna(current_rsi) else "N/A (데이터 부족)"
+        current_rsi_str = f"{current_rsi:.2f}" if not np.isnan(current_rsi) else "N/A (데이터 부족)"
         st.write(f"{selected_ticker} 가격 추세: SMA 크로스오버와 RSI 과매도/과매수 확인. 현재 RSI: {current_rsi_str}")
 
 # 푸터 - unchanged
