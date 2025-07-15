@@ -235,12 +235,19 @@ with tab1:
 
 with tab2:
     st.subheader("포트폴리오 관리")
-    if portfolio:
+    if not portfolio:
+        st.info("포트폴리오 티커를 입력하세요 (e.g., AAPL, TSLA).")
+    elif not df.empty:
         for tick in portfolio:
-            if tick.strip() in df.index:
-                row = df.loc[tick.strip()]
+            tick = tick.strip()
+            if tick in df.index:
+                row = df.loc[tick]
                 color = "green" if row['Change (%)'] > 0 else "red"
-                st.metric(label=f"{tick} ({row['Korean Name']})", value=f"${row['Current Price']:.2f}", delta=f"{row['Change (%)']:.2f}%", delta_color=color)
+                st.metric(label=f"{tick} ({row['Korean Name'] or 'N/A'})", value=f"${row['Current Price']:.2f}", delta=f"{row['Change (%)']:.2f}%", delta_color=color)
+            else:
+                st.warning(f"{tick} 데이터 없음. 스크리닝 목록에 추가하세요.")
+    else:
+        st.warning("데이터가 없습니다. 스크리닝을 확인하세요.")
 
 with tab3:
     st.subheader("백테스트 결과")
