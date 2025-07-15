@@ -133,7 +133,7 @@ with st.sidebar:
     stop_loss_threshold = st.slider("스탑로스 (%)", -10, -1, -5)
     sender_email = st.text_input("발신자 이메일 📧")
     sender_pw = st.text_input("비밀번호 🔑", type="password")
-    receiver_email = st.text_input("수신자 이�멜")
+    receiver_email = st.text_input("수신자 이메일")
     auto_refresh = st.toggle("실시간 모니터링 (1분) 🔄", value=True)
 
 # 저평가 주식 스크리닝 with 진행률 바
@@ -250,9 +250,10 @@ with tab3:
         return_pct, back_hist = backtest_strategy(hist, rsi_period, rsi_oversold, rsi_overbought, 50, 200)
         st.metric("수익률", f"{return_pct:.2f}%")
         fig, ax = plt.subplots(figsize=(10, 5))
-        sns.lineplot(x=back_hist.index.to_numpy(), y=back_hist['Close'].to_numpy(), label='Price', ax=ax)  # 변경: to_numpy() for 1D
-        sns.lineplot(x=back_hist.index.to_numpy(), y=back_hist['SMA_short'].to_numpy(), label='SMA50', ax=ax)
-        sns.lineplot(x=back_hist.index.to_numpy(), y=back_hist['SMA_long'].to_numpy(), label='SMA200', ax=ax)
+        ax.plot(back_hist.index, back_hist['Close'], label='Price')  # 변경: matplotlib.plot 사용
+        ax.plot(back_hist.index, back_hist['SMA_short'], label='SMA50')
+        ax.plot(back_hist.index, back_hist['SMA_long'], label='SMA200')
+        ax.legend()
         st.pyplot(fig)
 
 with tab4:
@@ -260,11 +261,13 @@ with tab4:
     if selected_ticker:
         hist = yf.download(selected_ticker, period="1y")
         fig, ax1 = plt.subplots(figsize=(10, 5))
-        sns.lineplot(x=hist.index.to_numpy(), y=hist['Close'].to_numpy(), label='Price', color='blue', ax=ax1)  # 변경: to_numpy()
-        sns.lineplot(x=hist.index.to_numpy(), y=calculate_sma(hist, 50).to_numpy(), label='SMA50', color='green', ax=ax1)
-        sns.lineplot(x=hist.index.to_numpy(), y=calculate_sma(hist, 200).to_numpy(), label='SMA200', color='red', ax=ax1)
+        ax1.plot(hist.index, hist['Close'], label='Price', color='blue')  # 변경: matplotlib.plot 사용
+        ax1.plot(hist.index, calculate_sma(hist, 50), label='SMA50', color='green')
+        ax1.plot(hist.index, calculate_sma(hist, 200), label='SMA200', color='red')
         ax2 = ax1.twinx()
-        sns.lineplot(x=hist.index.to_numpy(), y=calculate_rsi(hist).to_numpy(), label='RSI', color='purple', linestyle='--', ax=ax2)
+        ax2.plot(hist.index, calculate_rsi(hist), label='RSI', color='purple', linestyle='--')
+        ax1.legend(loc='upper left')
+        ax2.legend(loc='upper right')
         st.pyplot(fig)
 
 # 푸터 - unchanged
