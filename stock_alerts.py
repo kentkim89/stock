@@ -133,7 +133,7 @@ with st.sidebar:
     stop_loss_threshold = st.slider("스탑로스 (%)", -10, -1, -5)
     sender_email = st.text_input("발신자 이메일 📧")
     sender_pw = st.text_input("비밀번호 🔑", type="password")
-    receiver_email = st.text_input("수신자 이메일")
+    receiver_email = st.text_input("수신자 이�멜")
     auto_refresh = st.toggle("실시간 모니터링 (1분) 🔄", value=True)
 
 # 저평가 주식 스크리닝 with 진행률 바
@@ -141,53 +141,79 @@ st.write("저평가 주식 스크리닝 중... ⏳")
 progress_bar = st.progress(0)
 sp500 = get_sp500_tickers(max_screen_stocks)
 undervalued_stocks = []
-company_names = {}  # 추가: 회사명 저장
-korean_names = {  # 추가: 한글 예시 딕셔너리 (웹 검색 기반, 전체 아님)
-    'GOOG': '알파벳 (C종)',
-    'MO': '알트리아',
+company_names_eng = {}  # 추가: 영어 회사명
+company_names_kor = {  # 추가: 한글 이름 (부분, 웹 검색에서 추출)
+    'AAPL': '애플',
+    'MSFT': '마이크로소프트',
     'AMZN': '아마존',
-    'AMCR': 'Amcor',
-    # ... 추가로 확장 가능
+    'NVDA': '엔비디아',
+    'GOOGL': '알파벳 (A종)',
+    'TSLA': '테슬라',
+    'GOOG': '알파벳 (C종)',
+    'META': '메타 플랫폼즈',
+    'BRK.B': '버크셔 해서웨이 (B종)',
+    'AVGO': '브로드컴',
+    'LLY': '일라이 릴리',
+    'JPM': 'JP모건 체이스',
+    'UNH': '유나이티드헬스 그룹',
+    'V': '비자',
+    'MA': '마스터카드',
+    'XOM': '엑슨모빌',
+    'HD': '홈 디포',
+    'PG': '프록터 & 갬블',
+    'MRK': '머크',
+    'MCD': '맥도날드',
+    'LIN': '린데',
+    'GE': 'GE 에어로스페이스',
+    'PEP': '펩시코',
+    'MO': '알트리아',
+    'CB': '처브',
+    'PNC': 'PNC 파이낸셜 서비스 그룹',
+    'USB': 'US 뱅코프',
+    'CME': 'CME 그룹',
+    # 더 많은 추가 가능, 전체 목록은 별도 CSV 추천
 }
 for i, ticker in enumerate(sp500):
     try:
         stock = yf.Ticker(ticker)
         info = stock.info
-        english_name = info.get('longName', 'N/A')  # 추가: 영어 회사명
+        english_name = info.get('longName', 'N/A')
         if 'forwardPE' in info and info['forwardPE'] < per_threshold:
             undervalued_stocks.append(ticker)
-            company_names[ticker] = english_name
+            company_names_eng[ticker] = english_name
     except:
         pass
-    time.sleep(0.2)  # 변경: sleep 줄여 속도 향상 (rate limit 주의)
+    time.sleep(0.2)
     progress_bar.progress((i + 1) / len(sp500))
 st.success(f"스크리닝된 주식: {len(undervalued_stocks)}개 (상위 10: {', '.join(undervalued_stocks[:10])} ...)")
 
-# 데이터프레임에 회사명 추가 (표시용)
-if not df.empty:
-    df['English Name'] = df.index.map(company_names.get)
-    df['Korean Name'] = df.index.map(korean_names.get)  # 한글 (부분)
+# df 정의를 탭 밖으로 이동 (NameError 해결)
+df = get_stock_data(undervalued_stocks + [p.strip() for p in portfolio if p.strip()], rsi_period)
 
-# 탭 구조 - unchanged
+# 회사명 추가
+if not df.empty:
+    df['English Name'] = df.index.map(company_names_eng.get)
+    df['Korean Name'] = df.index.map(company_names_kor.get)  # N/A if not in dict
+
+# 탭 구조
 tab1, tab2, tab3, tab4 = st.tabs(["🔔 알림", "💼 포트폴리오", "📊 백테스트", "📉 차트"])
 
 with tab1:
     st.subheader("실시간 알림")
-    df = get_stock_data(undervalued_stocks + [p.strip() for p in portfolio if p.strip()], rsi_period)
     if not df.empty:
-        st.dataframe(df.style.background_gradient(cmap='viridis'))
+        st.dataframe(df.style.background_gradient(cmap='viridis'))  # 회사명 포함 표시
 
         declined_stocks = df[df['Change (%)'] < 0]
         if not declined_stocks.empty:
             st.markdown('<div class="error">⚠️ 가격 하락 알림!</div>', unsafe_allow_html=True)
             for ticker, row in declined_stocks.iterrows():
-                st.write(f"📉 {ticker}: {row['Change (%)']:.2f}% 하락")
+                st.write(f"📉 {ticker} ({row['Korean Name']}): {row['Change (%)']:.2f}% 하락")
 
         volume_increased_stocks = df[df['Volume Change (%)'] > volume_threshold]
         if not volume_increased_stocks.empty:
             st.markdown('<div class="error">⚠️ 거래량 증가 알림!</div>', unsafe_allow_html=True)
             for ticker, row in volume_increased_stocks.iterrows():
-                st.write(f"📈 {ticker}: {row['Volume Change (%)']:.2f}% 증가")
+                st.write(f"📈 {ticker} ({row['Korean Name']}): {row['Volume Change (%)']:.2f}% 증가")
 
         buy_signals = df[(df['Change (%)'] < 0) & (df['Volume Change (%)'] > volume_threshold) & (df['RSI'] < rsi_oversold) & (df['SMA50'] > df['SMA200'])]
         if not buy_signals.empty:
@@ -195,7 +221,7 @@ with tab1:
             for ticker, row in buy_signals.iterrows():
                 hist = yf.download(ticker, period="1y")
                 predicted, pred_change = predict_price(hist)
-                st.write(f"🟢 {ticker}: RSI {row['RSI']:.2f}, 예측 {pred_change:.2f}%")
+                st.write(f"🟢 {ticker} ({row['Korean Name']}): RSI {row['RSI']:.2f}, 예측 {pred_change:.2f}%")
                 if sender_email and receiver_email and sender_pw:
                     send_email(sender_email, sender_pw, receiver_email, f"{ticker} 매수", f"예측: {pred_change:.2f}%")
 
@@ -203,7 +229,7 @@ with tab1:
         if not sell_signals.empty:
             st.markdown('<div class="warning">💸 매도 기회 알림!</div>', unsafe_allow_html=True)
             for ticker, row in sell_signals.iterrows():
-                st.write(f"🔴 {ticker}: RSI {row['RSI']:.2f}")
+                st.write(f"🔴 {ticker} ({row['Korean Name']}): RSI {row['RSI']:.2f}")
                 if sender_email and receiver_email and sender_pw:
                     send_email(sender_email, sender_pw, receiver_email, f"{ticker} 매도", "매도 타이밍!")
 
@@ -214,7 +240,7 @@ with tab2:
             if tick.strip() in df.index:
                 row = df.loc[tick.strip()]
                 color = "green" if row['Change (%)'] > 0 else "red"
-                st.metric(label=tick, value=f"${row['Current Price']:.2f}", delta=f"{row['Change (%)']:.2f}%", delta_color=color)
+                st.metric(label=f"{tick} ({row['Korean Name']})", value=f"${row['Current Price']:.2f}", delta=f"{row['Change (%)']:.2f}%", delta_color=color)
 
 with tab3:
     st.subheader("백테스트 결과")
@@ -224,9 +250,9 @@ with tab3:
         return_pct, back_hist = backtest_strategy(hist, rsi_period, rsi_oversold, rsi_overbought, 50, 200)
         st.metric("수익률", f"{return_pct:.2f}%")
         fig, ax = plt.subplots(figsize=(10, 5))
-        sns.lineplot(x=back_hist.index, y=back_hist['Close'], label='Price', ax=ax)  # 변경: direct x, y without data
-        sns.lineplot(x=back_hist.index, y=back_hist['SMA_short'], label='SMA50', ax=ax)
-        sns.lineplot(x=back_hist.index, y=back_hist['SMA_long'], label='SMA200', ax=ax)
+        sns.lineplot(x=back_hist.index.to_numpy(), y=back_hist['Close'].to_numpy(), label='Price', ax=ax)  # 변경: to_numpy() for 1D
+        sns.lineplot(x=back_hist.index.to_numpy(), y=back_hist['SMA_short'].to_numpy(), label='SMA50', ax=ax)
+        sns.lineplot(x=back_hist.index.to_numpy(), y=back_hist['SMA_long'].to_numpy(), label='SMA200', ax=ax)
         st.pyplot(fig)
 
 with tab4:
@@ -234,11 +260,11 @@ with tab4:
     if selected_ticker:
         hist = yf.download(selected_ticker, period="1y")
         fig, ax1 = plt.subplots(figsize=(10, 5))
-        sns.lineplot(x=hist.index, y=hist['Close'], label='Price', color='blue', ax=ax1)  # 변경: direct x, y without data
-        sns.lineplot(x=hist.index, y=calculate_sma(hist, 50), label='SMA50', color='green', ax=ax1)
-        sns.lineplot(x=hist.index, y=calculate_sma(hist, 200), label='SMA200', color='red', ax=ax1)
+        sns.lineplot(x=hist.index.to_numpy(), y=hist['Close'].to_numpy(), label='Price', color='blue', ax=ax1)  # 변경: to_numpy()
+        sns.lineplot(x=hist.index.to_numpy(), y=calculate_sma(hist, 50).to_numpy(), label='SMA50', color='green', ax=ax1)
+        sns.lineplot(x=hist.index.to_numpy(), y=calculate_sma(hist, 200).to_numpy(), label='SMA200', color='red', ax=ax1)
         ax2 = ax1.twinx()
-        sns.lineplot(x=hist.index, y=calculate_rsi(hist), label='RSI', color='purple', linestyle='--', ax=ax2)
+        sns.lineplot(x=hist.index.to_numpy(), y=calculate_rsi(hist).to_numpy(), label='RSI', color='purple', linestyle='--', ax=ax2)
         st.pyplot(fig)
 
 # 푸터 - unchanged
