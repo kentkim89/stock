@@ -39,7 +39,7 @@ def get_latest_tickers():
         
         all_tickers.rename(columns={'Security Name': 'Name'}, inplace=True)
         all_tickers['display'] = all_tickers['Symbol'] + " - " + all_tickers['Name']
-        return all_tickers.sort_values(by='Symbol').reset_index(drop=True) # 인덱스 초기화
+        return all_tickers.sort_values(by='Symbol').reset_index(drop=True)
     except Exception as e:
         st.error(f"최신 종목 목록을 불러오는 데 실패했습니다: {e}")
         return None
@@ -99,15 +99,27 @@ def get_valuation_scores(info):
 st.sidebar.header("종목 검색")
 ticker_data = get_latest_tickers()
 if ticker_data is not None:
-    # --- 여기가 수정된 부분입니다 ---
+    # --- 여기가 수정된 부분입니다: 더 안전하고 확실한 인덱스 검색 로직 ---
+    options_list = ticker_data['display'].tolist()
     default_index = 0
-    if st.session_state.ticker in ticker_data['Symbol'].values:
-        # 인덱스를 찾고, 순수 int로 변환합니다.
-        default_index = int(ticker_data[ticker_data['Symbol'] == st.session_state.ticker].index[0])
+    
+    # 현재 세션의 티커에 해당하는 전체 표시 이름(display name)을 찾습니다.
+    current_display_series = ticker_data[ticker_data['Symbol'] == st.session_state.ticker]['display']
 
-    selected_display = st.sidebar.selectbox("종목 선택 (이름 또는 코드로 검색)", 
-        options=ticker_data['display'], 
-        index=default_index, # 안전하게 변환된 정수 인덱스 사용
+    if not current_display_series.empty:
+        default_display_value = current_display_series.iloc[0]
+        try:
+            # 파이썬 리스트의 내장 .index() 메소드를 사용하여 위치를 찾습니다.
+            # 이 방법은 항상 순수한 정수(int)를 반환하여 오류가 없습니다.
+            default_index = options_list.index(default_display_value)
+        except ValueError:
+            # 만약 리스트에 값이 없는 매우 드문 경우, 0으로 초기화합니다.
+            default_index = 0
+
+    selected_display = st.sidebar.selectbox(
+        "종목 선택 (이름 또는 코드로 검색)", 
+        options=options_list, 
+        index=default_index, # 안전하게 찾은 정수 인덱스 사용
         key="ticker_select"
     )
     # --- 여기까지 수정 ---
@@ -145,8 +157,7 @@ try:
         with tab1:
             if quote_type == 'ETF':
                 st.subheader("📌 ETF 핵심 정보")
-                cols = st.columns(3)
-                cols[0].metric(label="순자산가치 (NAV)", value=f"${info.get('navPrice', 0):,.2f}")
+                cols = st.columns(3); cols[0].metric(label="순자산가치 (NAV)", value=f"${info.get('navPrice', 0):,.2f}")
                 cols[1].metric(label="운용보수", value=f"{info.get('annualReportExpenseRatio', 0)*100:.3f}%")
                 cols[2].metric(label="총자산 (AUM)", value=f"${info.get('totalAssets', 0):,}")
                 st.subheader("📋 상위 10개 보유 종목")
