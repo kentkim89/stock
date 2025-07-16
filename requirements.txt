@@ -9,3 +9,6 @@ lxml>=5.2.2
 plotly
 google-generativeai
 gnews
+streamlit-option-menu
+st-aggrid
+streamlit-lottie
