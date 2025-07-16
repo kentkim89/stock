@@ -2,6 +2,7 @@ import streamlit as st
 import yfinance as yf
 import pandas as pd
 import plotly.graph_objs as go
+import plotly.express as px
 from plotly.subplots import make_subplots
 from datetime import datetime
 import google.generativeai as genai
@@ -20,36 +21,71 @@ except (FileNotFoundError, KeyError):
 if 'ticker' not in st.session_state: st.session_state.ticker = 'NVDA'
 if 'ai_analysis' not in st.session_state: st.session_state.ai_analysis = {}
 
-# --- (이하 모든 함수는 이전 버전과 동일하게 유지) ---
+# --- 데이터 로딩 함수 (핵심 개선) ---
+@st.cache_data(ttl=86400) # 24시간 동안 캐시 유지
+def get_latest_tickers():
+    """NASDAQ 서버에서 최신 주식 및 ETF 목록을 직접 다운로드합니다."""
+    try:
+        # NASDAQ 상장 종목
+        nasdaq_df = pd.read_csv("ftp://ftp.nasdaqtrader.com/symboldirectory/nasdaqlisted.txt", sep='|')
+        # NYSE 등 기타 상장 종목
+        other_df = pd.read_csv("ftp://ftp.nasdaqtrader.com/symboldirectory/otherlisted.txt", sep='|')
+        
+        # 필요한 컬럼만 선택하고 합치기
+        nasdaq_tickers = nasdaq_df[['Symbol', 'Security Name']]
+        other_tickers = other_df[['ACT Symbol', 'Security Name']]
+        other_tickers.rename(columns={'ACT Symbol': 'Symbol'}, inplace=True)
+        
+        # 두 데이터프레임 합치기
+        all_tickers = pd.concat([nasdaq_tickers, other_tickers]).dropna()
+        
+        # 불필요한 종목 제거 (테스트, 워런트 등)
+        all_tickers = all_tickers[~all_tickers['Symbol'].str.contains('\$')]
+        all_tickers = all_tickers[~all_tickers['Symbol'].str.contains('\.')]
+        
+        all_tickers.rename(columns={'Security Name': 'Name'}, inplace=True)
+        all_tickers['display'] = all_tickers['Symbol'] + " - " + all_tickers['Name']
+        return all_tickers.sort_values(by='Symbol')
+    except Exception as e:
+        st.error(f"최신 종목 목록을 불러오는 데 실패했습니다: {e}")
+        return None
+
 @st.cache_data(ttl=300)
 def get_stock_data(ticker):
     stock = yf.Ticker(ticker)
     info = stock.info
-    if not info.get('marketCap'): return None, None, None
-    financials = stock.quarterly_financials
-    google_news = GNews(language='ko', country='KR'); company_name = info.get('shortName', ticker)
-    news = google_news.get_news(f'{company_name} 주가')
-    return info, financials, news
+    if not info.get('marketCap') and not info.get('totalAssets'): return None, None
+    financials = stock.quarterly_financials if info.get('quoteType') == 'EQUITY' else None
+    return info, financials
+
+@st.cache_data(ttl=900)
+def get_news_data(query):
+    google_news = GNews(language='ko', country='KR')
+    news = google_news.get_news(query)
+    return news
 
 @st.cache_data(ttl=60)
 def get_history(ticker, period, interval):
     return yf.Ticker(ticker).history(period=period, interval=interval)
 
+# --- (이하 모든 AI 분석 및 UI 렌더링 함수는 이전과 동일하게 유지) ---
 @st.cache_data(ttl=600)
 def generate_ai_analysis(info, data, analysis_type):
-    model = genai.GenerativeModel('gemini-1.5-flash'); company_name = info.get('longName', '해당 기업')
+    model = genai.GenerativeModel('gemini-1.5-flash'); company_name = info.get('longName', '해당 종목')
     today_date = datetime.now().strftime('%Y년 %m월 %d일'); prompt = ""
-    if analysis_type == 'verdict':
+    if analysis_type == 'verdict_stock':
         scores, details = data
         prompt = f"""당신은 최고 투자 책임자(CIO)입니다. **오늘은 {today_date}입니다.** '{company_name}'에 대한 아래의 모든 분석 결과를 종합하여, 최종 투자 의견과 그 이유를 명확하게 서술해주세요.
-        - **AI 가치평가 스코어카드:** 가치: {scores['가치']}/6, 성장성: {scores['성장성']}/8, 수익성: {scores['수익성']}/8, 애널리스트: {scores['애널리스트']}/4
+        - **AI 가치평가 스코어카드:** 가치: {scores['가치']}/6, 성장성: {scores['성장성']}/8, 수익성: {scores['수익성']}/8
         - **주요 지표:** {', '.join([f'{k}: {v}' for k, v in details.items()])}
         **최종 투자 의견 및 전략:** (서론-본론-결론 형식으로, 최종 투자 등급('강력 매수', '매수 고려', '관망', '투자 주의' 중 하나)을 결정하고, 그 이유와 투자 전략을 논리적으로 설명해주세요.)"""
-    elif analysis_type == 'chart':
-        history = data; ma50 = history['Close'].rolling(window=50).mean().iloc[-1]; ma200 = history['Close'].rolling(window=200).mean().iloc[-1]
-        prompt = f"""당신은 차트 기술적 분석(CMT) 전문가입니다. **오늘은 {today_date}입니다.** 다음 데이터를 바탕으로 '{company_name}'의 주가 차트를 상세히 분석해주세요.
-        - 현재가: {info.get('currentPrice', 'N/A'):.2f}, 50일 이동평균선: {ma50:.2f}, 200일 이동평균선: {ma200:.2f}
-        **분석:** (현재 추세, 이동평균선의 관계, 주요 지지/저항선, 종합적인 기술적 의견)"""
+    elif analysis_type == 'verdict_etf':
+        holdings_summary = "\n".join([f"- {h['holdingName']} ({h['holdingPercent']*100:.2f}%)" for h in info.get('holdings', [])[:5]])
+        prompt = f"""당신은 ETF 전문 애널리스트입니다. **오늘은 {today_date}입니다.** 다음 데이터를 바탕으로 '{company_name}' ETF를 종합적으로 분석하고 투자 의견을 제시해주세요.
+        - **ETF 개요:** {info.get('longBusinessSummary')}
+        - **운용보수(Expense Ratio):** {info.get('annualReportExpenseRatio', 'N/A')}
+        - **상위 보유 종목:**\n{holdings_summary}
+        **ETF 종합 분석 리포트:** (ETF의 투자 전략, 보유 종목의 매력도, 운용보수의 적절성을 종합적으로 평가하고, 이 ETF가 어떤 유형의 투자자에게 적합한지에 대한 최종 의견을 제시해주세요.)"""
     if not prompt: return "분석 유형 오류"
     try:
         response = model.generate_content(prompt); return response.text
@@ -59,81 +95,86 @@ def get_valuation_scores(info):
     scores, details = {}, {}; pe, pb = info.get('trailingPE'), info.get('priceToBook')
     scores['가치'] = ((4 if 0 < pe <= 15 else 2 if pe <= 25 else 1) if pe else 0) + ((2 if 0 < pb <= 1.5 else 1) if pb else 0)
     details['PER'] = f"{pe:.2f}" if pe else "N/A"; details['PBR'] = f"{pb:.2f}" if pb else "N/A"
-    peg, rev_growth = info.get('pegRatio'), info.get('revenueGrowth', 0)
-    scores['성장성'] = ((4 if 0 < peg <= 1 else 2 if peg <= 2 else 0) if peg else 0) + ((4 if rev_growth > 0.2 else 2 if rev_growth > 0.1 else 0))
+    peg, rev_growth = info.get('pegRatio'), info.get('revenueGrowth', 0); scores['성장성'] = ((4 if 0 < peg <= 1 else 2 if peg <= 2 else 0) if peg else 0) + ((4 if rev_growth > 0.2 else 2 if rev_growth > 0.1 else 0))
     details['PEG'] = f"{peg:.2f}" if peg else "N/A"; details['매출성장률'] = f"{rev_growth*100:.2f}%"
-    roe, profit_margin = info.get('returnOnEquity', 0), info.get('profitMargins', 0)
-    scores['수익성'] = ((4 if roe > 0.2 else 2 if roe > 0.15 else 0)) + ((4 if profit_margin > 0.2 else 2 if profit_margin > 0.1 else 0))
+    roe, profit_margin = info.get('returnOnEquity', 0), info.get('profitMargins', 0); scores['수익성'] = ((4 if roe > 0.2 else 2 if roe > 0.15 else 0)) + ((4 if profit_margin > 0.2 else 2 if profit_margin > 0.1 else 0))
     details['ROE'] = f"{roe*100:.2f}%"; details['순이익률'] = f"{profit_margin*100:.2f}%"
-    target_price, current_price = info.get('targetMeanPrice'), info.get('currentPrice', 0)
-    scores['애널리스트'] = (4 if (target_price/current_price-1)>0.3 else 2 if (target_price/current_price-1)>0.1 else 1) if target_price and current_price and current_price > 0 else 0
     return scores, details
 
 # --- 2. 앱 UI 렌더링 ---
 st.sidebar.header("종목 검색")
-search_ticker = st.sidebar.text_input("종목 코드 입력", value=st.session_state.ticker, key="ticker_input").upper()
-if st.sidebar.button("분석 실행", key="run_button"):
-    st.session_state.ticker = search_ticker; st.session_state.ai_analysis = {}; st.cache_data.clear(); st.rerun()
+ticker_data = get_latest_tickers() # CSV 대신 새로운 함수 호출
+if ticker_data is not None:
+    # 검색 기능이 있는 selectbox
+    selected_display = st.sidebar.selectbox("종목 선택 (이름 또는 코드로 검색)", 
+        options=ticker_data['display'], 
+        index=ticker_data[ticker_data['Symbol'] == st.session_state.ticker].index[0] if st.session_state.ticker in ticker_data['Symbol'].values else 0,
+        key="ticker_select"
+    )
+    selected_ticker = ticker_data[ticker_data['display'] == selected_display]['Symbol'].iloc[0]
+    if selected_ticker != st.session_state.ticker:
+        st.session_state.ticker = selected_ticker
+        st.session_state.ai_analysis = {}
+        st.cache_data.clear()
+        st.rerun()
+else:
+    st.sidebar.error("최신 종목 목록을 불러오는 데 실패했습니다.")
 
 try:
-    info, financials, news = get_stock_data(st.session_state.ticker)
+    info, financials = get_stock_data(st.session_state.ticker)
     if info is None: st.error(f"'{st.session_state.ticker}'에 대한 데이터를 찾을 수 없습니다.")
     else:
         company_name = info.get('longName', st.session_state.ticker)
-        scores, details = get_valuation_scores(info)
-        
-        st.markdown(f"<h1 style='margin-bottom:0;'>🚀 {company_name} AI 주가 분석</h1>", unsafe_allow_html=True)
-        st.caption(f"종목코드: {st.session_state.ticker} | 마지막 업데이트: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        quote_type = info.get('quoteType')
+
+        st.markdown(f"<h1 style='margin-bottom:0;'>🚀 {company_name} AI 분석</h1>", unsafe_allow_html=True)
+        st.caption(f"종목코드: {st.session_state.ticker} ({quote_type}) | 마지막 업데이트: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
         st.markdown("---")
 
         with st.container(border=True):
             st.subheader("🤖 AI 종합 투자 의견")
-            if 'verdict' not in st.session_state.ai_analysis or st.button("AI 의견 새로고침", key="verdict_refresh"):
+            analysis_key, analysis_type = ('verdict', 'verdict_etf' if quote_type == 'ETF' else 'verdict_stock')
+            if analysis_key not in st.session_state.ai_analysis or st.button("AI 의견 새로고침", key="verdict_refresh"):
                 with st.spinner("AI가 모든 데이터를 종합하여 최종 투자 의견을 생성 중입니다..."):
-                    st.session_state.ai_analysis['verdict'] = generate_ai_analysis(info, (scores, details), 'verdict')
-            st.markdown(st.session_state.ai_analysis['verdict'])
+                    data_for_ai = info if quote_type == 'ETF' else get_valuation_scores(info)
+                    st.session_state.ai_analysis[analysis_key] = generate_ai_analysis(info, data_for_ai, analysis_type)
+            st.markdown(st.session_state.ai_analysis.get(analysis_key, "AI 의견을 생성하려면 버튼을 클릭하세요."))
         
-        tab1, tab2, tab3 = st.tabs(["**📊 대시보드 및 차트**", "**📂 재무 및 가치평가**", "**💡 뉴스 및 시장 동향**"])
-
+        tab1, tab2 = st.tabs(["**📊 대시보드 및 차트**", "**💡 뉴스 및 시장 동향**"])
         with tab1:
-            st.subheader("📈 주가 및 거래량 차트")
-            period_options = {"오늘": "1d", "1주": "5d", "1개월": "1mo", "1년": "1y", "5년": "5y"}
+            if quote_type == 'ETF':
+                st.subheader("📌 ETF 핵심 정보")
+                cols = st.columns(3)
+                cols[0].metric(label="순자산가치 (NAV)", value=f"${info.get('navPrice', 0):,.2f}")
+                cols[1].metric(label="운용보수", value=f"{info.get('annualReportExpenseRatio', 0)*100:.3f}%")
+                cols[2].metric(label="총자산 (AUM)", value=f"${info.get('totalAssets', 0):,}")
+                st.subheader("📋 상위 10개 보유 종목")
+                holdings = info.get('holdings', [])
+                if holdings:
+                    holdings_df = pd.DataFrame(holdings); holdings_df['holdingPercent'] *= 100
+                    fig_pie = px.pie(holdings_df.head(10), values='holdingPercent', names='holdingName', title='Top 10 Holdings', hole=.3)
+                    st.plotly_chart(fig_pie, use_container_width=True)
+            elif quote_type == 'EQUITY':
+                st.subheader("⚖️ AI 가치평가 스코어카드")
+                scores, details = get_valuation_scores(info)
+                cols = st.columns(4); max_scores = {'가치': 6, '성장성': 8, '수익성': 8}
+                for i, (cat, score) in enumerate(scores.items()):
+                    with cols[i]:
+                        fig_gauge = go.Figure(go.Indicator(mode="gauge+number", value=score, domain={'x': [0, 1], 'y': [0, 1]}, title={'text': cat, 'font': {'size': 16}}, gauge={'axis': {'range': [0, max_scores[cat]]}, 'bar': {'color': "#0d6efd"}}))
+                        fig_gauge.update_layout(height=150, margin=dict(l=10, r=10, t=40, b=10)); st.plotly_chart(fig_gauge, use_container_width=True)
+                with st.expander("상세 평가지표 보기"): st.table(pd.DataFrame(details.items(), columns=['지표', '수치']))
+
+            st.subheader("📈 주가 차트")
+            period_options = {"1개월": "1mo", "1년": "1y", "5년": "5y"}
             selected_period = st.radio("차트 기간 선택", options=period_options.keys(), horizontal=True, key="chart_period")
-            period_val, interval_val = (period_options[selected_period], "5m") if selected_period == "오늘" else (period_options[selected_period], "1d")
-            history = get_history(st.session_state.ticker, period_val, interval_val)
-
+            history = get_history(st.session_state.ticker, selected_period, "1d")
             if not history.empty:
-                fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.05, row_heights=[0.7, 0.3])
-                fig.add_trace(go.Candlestick(x=history.index, open=history['Open'], high=history['High'], low=history['Low'], close=history['Close'], name='주가'), row=1, col=1)
-                if period_val not in ["1d", "5d"]:
-                    ma50 = history['Close'].rolling(window=50).mean(); ma200 = history['Close'].rolling(window=200).mean()
-                    fig.add_trace(go.Scatter(x=history.index, y=ma50, mode='lines', name='50일 이동평균', line=dict(color='orange', width=1)), row=1, col=1)
-                    fig.add_trace(go.Scatter(x=history.index, y=ma200, mode='lines', name='200일 이동평균', line=dict(color='purple', width=1)), row=1, col=1)
-                fig.add_trace(go.Bar(x=history.index, y=history['Volume'], name='거래량'), row=2, col=1)
-                fig.update_layout(height=500, xaxis_rangeslider_visible=False); fig.update_yaxes(title_text="주가", row=1, col=1); fig.update_yaxes(title_text="거래량", row=2, col=1)
-                st.plotly_chart(fig, use_container_width=True)
-
-                with st.container(border=True):
-                    st.subheader("🤖 AI 심층 차트 분석")
-                    if 'chart' not in st.session_state.ai_analysis or st.button("차트 분석 새로고침", key="chart_refresh"):
-                        with st.spinner("AI가 차트를 심층 분석 중입니다..."):
-                            history_for_ai = get_history(st.session_state.ticker, "1y", "1d")
-                            st.session_state.ai_analysis['chart'] = generate_ai_analysis(info, history_for_ai, 'chart')
-                    st.markdown(st.session_state.ai_analysis['chart'])
-            else: st.warning("차트 데이터를 불러올 수 없습니다.")
+                fig_main_chart = go.Figure(data=[go.Scatter(x=history.index, y=history['Close'], mode='lines', name='종가')])
+                st.plotly_chart(fig_main_chart, use_container_width=True)
 
         with tab2:
-            st.subheader("⚖️ AI 가치평가 스코어카드")
-            cols = st.columns(4)
-            max_scores = {'가치': 6, '성장성': 8, '수익성': 8, '애널리스트': 4}
-            for i, (cat, score) in enumerate(scores.items()):
-                with cols[i]:
-                    fig_gauge = go.Figure(go.Indicator(mode="gauge+number", value=score, domain={'x': [0, 1], 'y': [0, 1]}, title={'text': cat, 'font': {'size': 16}}, gauge={'axis': {'range': [0, max_scores[cat]]}, 'bar': {'color': "#0d6efd"}}))
-                    fig_gauge.update_layout(height=150, margin=dict(l=10, r=10, t=40, b=10)); st.plotly_chart(fig_gauge, use_container_width=True)
-            with st.expander("상세 평가지표 보기"): st.table(pd.DataFrame(details.items(), columns=['지표', '수치']))
-
-        with tab3:
             st.subheader("📰 관련 최신 뉴스 (From Google News)")
+            news = get_news_data(f'{company_name} 주가')
             if news:
                 for article in news[:10]: st.write(f"[{article['title']}]({article['url']}) - *{article['publisher']['title']}*")
             else: st.info("구글 뉴스에서 관련 뉴스를 찾을 수 없습니다.")
