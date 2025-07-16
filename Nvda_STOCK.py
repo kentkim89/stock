@@ -9,7 +9,7 @@ from gnews import GNews
 # --- 새로운 라이브러리 임포트 ---
 from streamlit_option_menu import option_menu
 from streamlit_lottie import st_lottie
-from st_aggrid import AgGrid, GridOptionsBuilder
+from st_aggrid_redux import AgGrid, GridOptionsBuilder
 
 # --- 1. 페이지 기본 설정 및 함수 정의 ---
 st.set_page_config(page_title="AI 주가 분석 플랫폼", page_icon="🚀", layout="wide")
