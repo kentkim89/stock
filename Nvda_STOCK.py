@@ -14,10 +14,10 @@ st.set_page_config(page_title="AI 주가 분석 대시보드", page_icon="🧠",
 try:
     genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
 except (FileNotFoundError, KeyError):
-    st.error("오류: Gemini API 키가 설정되지 않았습니다. .streamlit/secrets.toml 파일을 확인해주세요.")
+    st.error("오류: Gemini API 키가 설정되지 않았습니다. .streamlit/secrets.toml 파일을 확인하고 Streamlit Cloud에 Secrets를 등록해주세요.")
     st.stop()
 
-# 세션 상태 초기화 (가장 중요!)
+# 세션 상태 초기화
 if 'ticker' not in st.session_state:
     st.session_state.ticker = 'NVDA'
 if 'gemini_report' not in st.session_state:
@@ -37,25 +37,42 @@ def get_stock_data(ticker):
 def get_history(ticker, period, interval):
     return yf.Ticker(ticker).history(period=period, interval=interval)
 
-# --- 제미나이 분석 함수 (프롬프트 강화) ---
+# --- 제미나이 분석 함수 (안정성 강화 버전) ---
 @st.cache_data(ttl=600)
 def get_gemini_analysis(info):
+    """제미나이 API를 호출하여 기업 분석 리포트를 생성합니다."""
     model = genai.GenerativeModel('gemini-1.5-flash')
     company_name = info.get('longName', '해당 기업')
     
+    # --- 데이터 안전하게 전처리하는 과정 (핵심 수정 부분) ---
+    def format_value(value, precision=2, is_percent=False):
+        """숫자 데이터는 서식을 적용하고, 아니면 'N/A'를 반환하는 안전한 함수"""
+        if isinstance(value, (int, float)):
+            return f"{value * 100:.{precision}f}%" if is_percent else f"{value:.{precision}f}"
+        return "N/A"
+
+    per = format_value(info.get('trailingPE'))
+    pbr = format_value(info.get('priceToBook'))
+    peg = format_value(info.get('pegRatio'))
+    roe = format_value(info.get('returnOnEquity'), is_percent=True)
+    target_price = format_value(info.get('targetMeanPrice'))
+    current_price = format_value(info.get('currentPrice', info.get('regularMarketPrice')))
+    market_cap = f"${info.get('marketCap', 0):,}" if info.get('marketCap') else "N/A"
+    
+    # --- 안전하게 전처리된 변수를 사용한 프롬프트 ---
     prompt = f"""
     당신은 월스트리트의 경험 많은 시니어 금융 애널리스트입니다. 다음 데이터를 기반으로 '{company_name}'에 대한 전문적인 투자 분석 보고서를 **Markdown 형식의 한국어**로 작성해주세요.
 
     **핵심 기업 데이터:**
     - **기업명:** {company_name} ({info.get('symbol')})
     - **업종:** {info.get('sector', 'N/A')}
-    - **시가총액:** ${info.get('marketCap', 0):,}
-    - **PER:** {info.get('trailingPE', 'N/A'):.2f}
-    - **PBR:** {info.get('priceToBook', 'N/A'):.2f}
-    - **PEG:** {info.get('pegRatio', 'N/A'):.2f}
-    - **ROE:** {info.get('returnOnEquity', 0)*100:.2f}%
-    - **애널리스트 평균 목표가:** ${info.get('targetMeanPrice', 'N/A')}
-    - **현재가:** ${info.get('currentPrice', info.get('regularMarketPrice', 'N/A'))}
+    - **시가총액:** {market_cap}
+    - **PER:** {per}
+    - **PBR:** {pbr}
+    - **PEG:** {peg}
+    - **ROE:** {roe}
+    - **애널리스트 평균 목표가:** ${target_price}
+    - **현재가:** ${current_price}
 
     **보고서 작성 지침:**
     아래 목차에 따라, 각 항목을 구체적이고 논리적으로 분석하여 투자자들이 명확한 판단을 내릴 수 있도록 도와주세요.
@@ -84,8 +101,7 @@ st.sidebar.header("종목 검색")
 search_ticker = st.sidebar.text_input("종목 코드 입력 (예: AAPL, GOOG)", value=st.session_state.ticker, key="ticker_input").upper()
 if st.sidebar.button("분석 실행", key="run_button"):
     st.session_state.ticker = search_ticker
-    # CRITICAL: 새로운 종목 검색 시 이전 리포트 삭제
-    st.session_state.gemini_report = None
+    st.session_state.gemini_report = None # 새로운 종목 검색 시 이전 리포트 삭제
     st.cache_data.clear()
     st.rerun()
 
@@ -97,6 +113,7 @@ try:
     else:
         company_name = info.get('longName', st.session_state.ticker)
         st.title(f"🧠 {company_name} AI 주가 분석")
+        st.caption(f"종목코드: {st.session_state.ticker} | 마지막 업데이트: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
 
         tab1, tab2, tab3 = st.tabs(["**📊 종합 대시보드**", "**🤖 제미나이 AI 심층 분석**", "**📂 재무 및 기업 정보**"])
 
@@ -121,10 +138,10 @@ try:
         
         with tab2:
             st.subheader(f"🤖 제미나이(Gemini)가 분석한 {company_name} 리포트")
-
-            # 버튼을 눌러 제미나이 분석을 실행하고, 결과를 세션 상태에 저장
+            
             if st.button("실시간 AI 리포트 생성하기", key="gemini_button"):
                 with st.spinner('제미나이 AI가 최신 데이터를 분석하고 있습니다... 약 30초 정도 소요될 수 있습니다.'):
+                    # API 호출 후 결과를 세션 상태에 저장
                     st.session_state.gemini_report = get_gemini_analysis(info)
             
             st.markdown("---")
@@ -138,13 +155,14 @@ try:
         with tab3:
             st.subheader(f"💰 {company_name} 재무 상태")
             if financials is not None and not financials.empty:
-                financials_t = financials.T.iloc[:4] # 최근 4분기
+                financials_t = financials.T.iloc[:4]
                 financials_t.index = pd.to_datetime(financials_t.index).strftime('%Y-%m')
                 fig_fin = go.Figure(data=[go.Bar(name='매출(Revenue)', x=financials_t.index, y=financials_t.get('Total Revenue')),
                                           go.Bar(name='순이익(Net Income)', x=financials_t.index, y=financials_t.get('Net Income'))])
                 fig_fin.update_layout(barmode='group', title_text="분기별 매출 및 순이익 추이")
                 st.plotly_chart(fig_fin, use_container_width=True)
-            else: st.info("재무 데이터를 가져올 수 없습니다.")
+            else: 
+                st.info("재무 데이터를 가져올 수 없습니다.")
             
             st.divider()
             st.subheader(f"📑 {company_name} 기업 개요")
@@ -154,4 +172,14 @@ except Exception as e:
     st.error(f"앱 실행 중 예상치 못한 오류가 발생했습니다: {e}")
 
 # 사이드바 알림
-# ... (이전과 동일) ...
+st.sidebar.markdown("---")
+st.sidebar.header("가격 알림 설정")
+high_alert = st.sidebar.number_input("고점 알림 가격", min_value=0.0, format="%.2f", key="high_alert")
+low_alert = st.sidebar.number_input("저점 알림 가격", min_value=0.0, format="%.2f", key="low_alert")
+
+if 'info' in locals() and info is not None:
+    current_price = info.get('currentPrice', 0)
+    if high_alert > 0 and current_price >= high_alert:
+        st.sidebar.success(f"📈 목표 고점(${high_alert:,.2f}) 도달!")
+    if low_alert > 0 and current_price <= low_alert:
+        st.sidebar.warning(f"📉 목표 저점(${low_alert:,.2f}) 도달!")
