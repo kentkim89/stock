@@ -8,3 +8,4 @@ seaborn>=0.13.2
 lxml>=5.2.2
 plotly
 google-generativeai
+gnews
