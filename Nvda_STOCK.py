@@ -2,194 +2,228 @@ import streamlit as st
 import yfinance as yf
 import pandas as pd
 import plotly.graph_objs as go
+import plotly.express as px
 from datetime import datetime
 
-# --- 1. 모든 함수를 코드 상단에 먼저 정의 ---
+# --- 1. 페이지 기본 설정 및 함수 정의 ---
 
-@st.cache_data(ttl=60) # 1분마다 야후 파이낸스 데이터 갱신
-def get_stock_data(ticker):
-    """주식 기본 정보, 동종업체 정보, 1일치 분봉 데이터를 가져옵니다."""
-    stock = yf.Ticker(ticker)
-    info = stock.info
-    history = stock.history(period="1d", interval="1m")
-    peers = {'AMD': yf.Ticker('AMD').info} # 비교군으로 AMD 정보 추가
-    return info, history, peers, stock.news
-
-def calculate_valuation(info, peers, current_price):
-    """현재 주가를 기반으로 가치 평가를 동적으로 계산합니다."""
-    valuation = {'verdict': "판단 보류", 'color': "gray", 'reasons': []}
-    points = 0
-
-    # 1. 애널리스트 목표가 비교
-    target_price = info.get('targetMeanPrice')
-    if target_price:
-        if current_price > target_price * 1.1: # 목표가보다 10% 이상 높으면
-            points -= 2
-        elif current_price > target_price:
-            points -= 1
-        else:
-            points += 1
-        valuation['reasons'].append(f"🎯 **애널리스트 목표가:** ${target_price:,.2f} (현재가 대비: {((current_price/target_price-1)*100):.1f}%)")
-
-    # 2. PEG 비율
-    peg_ratio = info.get('pegRatio', 0)
-    if peg_ratio > 2.0:
-        points -= 1
-    elif 0 < peg_ratio < 1.2:
-        points += 1
-    valuation['reasons'].append(f"📈 **PEG 비율:** {peg_ratio:.2f} (성장성 대비 주가 수준, 1 미만일수록 좋음)")
-
-    # 3. 동종업체 PER 비교
-    current_pe = info.get('trailingPE', 0)
-    amd_pe = peers['AMD'].get('trailingPE', 0)
-    if current_pe > 0 and amd_pe > 0:
-        if current_pe > amd_pe * 1.5: # AMD보다 PER이 50% 이상 높으면
-            points -= 1
-        valuation['reasons'].append(f"📊 **주가수익비율(PER):** {current_pe:.2f} (경쟁사 AMD: {amd_pe:.2f})")
-
-    # 최종 판단
-    if points <= -2:
-        valuation.update({'verdict': "고평가 가능성", 'color': "#d9534f"}) # 빨간색
-    elif points == -1:
-        valuation.update({'verdict': "적정 ~ 고평가 구간", 'color': "#f0ad4e"}) # 주황색
-    elif points >= 1:
-        valuation.update({'verdict': "적정 ~ 저평가 구간", 'color': "#5cb85c"}) # 초록색
-    else:
-        valuation.update({'verdict': "적정 주가 수준", 'color': "#0275d8"}) # 파란색
-
-    return valuation
-
-def get_ai_outlook_analysis():
-    """엔비디아의 AI 관련 전망을 분석하여 텍스트로 반환합니다."""
-    analysis = {
-        "summary": """
-        **AI 시대의 '곡괭이'를 파는 기업**으로 비유되며, AI 산업의 성장에 가장 직접적인 수혜를 받는 기업입니다.
-        GPU의 압도적인 성능과 CUDA라는 강력한 소프트웨어 생태계를 기반으로 한 경제적 해자는 단기간에 무너지기 어렵습니다.
-        """,
-        "strengths": "✅ **독점적 시장 지배력:** AI 학습 및 추론용 GPU 시장의 80% 이상을 점유한 강력한 리더입니다. \n✅ **CUDA 생태계:** 수백만 개발자를 보유한 CUDA 플랫폼은 경쟁사가 넘볼 수 없는 강력한 기술적 해자입니다.",
-        "risks": "⚠️ **높은 밸류에이션:** 미래의 성장 기대치가 현재 주가에 상당 부분 반영되어 있어, 시장 성장 둔화 시 변동성이 클 수 있습니다. \n⚠️ **지정학적 리스크:** 미-중 기술 분쟁 심화 시, 중국 관련 매출에 타격이 발생할 수 있습니다."
-    }
-    return analysis
-
-# --- 2. 앱 UI 렌더링 시작 ---
-
-# 페이지 기본 설정
 st.set_page_config(
-    page_title="NVIDIA AI 주가 분석 대시보드",
-    page_icon="🤖",
+    page_title="AI 주가 분석 대시보드",
+    page_icon="💡",
     layout="wide",
 )
 
-# CSS 스타일 적용 (UI 렌더링 시작 부분으로 이동)
-st.markdown("""
-    <style>
-    .st-emotion-cache-1y4p8pa {
-        padding-top: 2rem;
-    }
-    .st-emotion-cache-r421ms {
-        border: 1px solid #e6e6e6;
-        border-radius: 0.5rem;
-        padding: 1rem;
-        box-shadow: 0 1px 3px rgba(0,0,0,0.12), 0 1px 2px rgba(0,0,0,0.24);
-    }
-    .st-emotion-cache-1rpb2s1 {
-        font-size: 1.5rem;
-        font-weight: bold;
-    }
-    </style>
-    """, unsafe_allow_html=True)
+# --- 캐싱을 사용한 데이터 로딩 함수 ---
+@st.cache_data(ttl=300) # 5분마다 데이터 갱신
+def get_stock_data(ticker):
+    """입력된 티커에 대한 모든 주식 데이터를 가져옵니다."""
+    stock = yf.Ticker(ticker)
+    info = stock.info
+    # .info가 비어있으면 유효하지 않은 티커로 간주
+    if not info or info.get('regularMarketPrice') is None:
+        return None
+    history = stock.history(period="1d", interval="1m")
+    recs = stock.recommendations
+    financials = stock.quarterly_financials
+    return info, history, recs, financials
 
-st.title("🤖 NVIDIA AI 주가 분석 대시보드")
+# --- 수익성 진단 함수 ---
+def check_profitability(info):
+    """기업의 수익성을 진단하고 결과를 반환합니다."""
+    profit_margin = info.get('profitMargins', 0)
+    operating_margin = info.get('operatingMargins', 0)
+    net_income = info.get('netIncomeToCommon', 0)
+    free_cashflow = info.get('freeCashflow', 0)
+
+    score = 0
+    reasons = []
+
+    if profit_margin > 0.1: # 순이익률 10% 이상
+        score += 1
+    if operating_margin > 0.15: # 영업이익률 15% 이상
+        score += 1
+    if net_income > 0:
+        score += 1
+    if free_cashflow > 0:
+        score += 1
+        reasons.append(f"✅ **잉여현금흐름:** ${free_cashflow/1_000_000_000:.2f}B (투자 후 남는 현금 흑자)")
+    else:
+        reasons.append(f"⚠️ **잉여현금흐름:** ${free_cashflow/1_000_000_000:.2f}B (투자 후 현금 부족)")
+
+    reasons.insert(0, f"✅ **순이익률:** {profit_margin*100:.2f}%")
+    reasons.insert(1, f"✅ **영업이익률:** {operating_margin*100:.2f}%")
+
+    if score >= 3:
+        return {"verdict": "수익성 우수", "color": "#5cb85c", "reasons": reasons}
+    elif score >= 1:
+        return {"verdict": "수익성 보통", "color": "#0275d8", "reasons": reasons}
+    else:
+        return {"verdict": "수익성 부진", "color": "#d9534f", "reasons": reasons}
+
+# --- 가치 평가 함수 ---
+def calculate_valuation(info, current_price, recs):
+    """현재 주가에 대한 가치 평가 총평을 생성합니다."""
+    summary = ""
+    target_price = info.get('targetMeanPrice')
+    peg_ratio = info.get('pegRatio')
+    recs_summary = recs.tail(10)['To Grade'].value_counts() if recs is not None else pd.Series()
+
+    # 1. 애널리스트 목표가 기반 평가
+    if target_price:
+        if current_price > target_price:
+            summary += f"현재 주가는 애널리스트 평균 목표가(${target_price:,.2f})를 **상회**하고 있어 단기적인 상승 여력에 대한 부담이 있습니다. "
+        else:
+            upside = (target_price / current_price - 1) * 100
+            summary += f"현재 주가는 애널리스트 평균 목표가(${target_price:,.2f}) 대비 **{upside:.2f}%의 상승 여력**이 있는 것으로 평가됩니다. "
+
+    # 2. 성장성(PEG) 기반 평가
+    if peg_ratio:
+        if peg_ratio > 2.0:
+            summary += f"다만, 성장성 대비 주가 수준을 나타내는 PEG 비율이 {peg_ratio:.2f}로 다소 높아, **미래 성장 기대치가 주가에 많이 반영**된 상태입니다. "
+        elif 0 < peg_ratio < 1.2:
+            summary += f"성장성 대비 주가 수준을 나타내는 PEG 비율이 {peg_ratio:.2f}로 **매력적인 수준**으로 평가됩니다. "
+
+    # 3. 최근 추천 동향
+    if not recs_summary.empty and ('Buy' in recs_summary.index or 'Strong Buy' in recs_summary.index):
+        summary += "최근 애널리스트들은 대체로 **긍정적인 투자의견**을 유지하고 있습니다."
+    else:
+        summary += "최근 애널리스트들의 투자의견은 다소 엇갈리고 있습니다."
+
+    return summary if summary else "가치 평가 정보를 종합하기 어렵습니다."
+
+
+# --- 2. 앱 UI 렌더링 ---
+
+# 세션 상태 초기화
+if 'ticker' not in st.session_state:
+    st.session_state.ticker = 'NVDA'
+
+# 사이드바 구성
+st.sidebar.header("종목 검색")
+search_ticker = st.sidebar.text_input("종목 코드 입력 (예: AAPL, GOOG)", value=st.session_state.ticker).upper()
+if st.sidebar.button("분석 실행"):
+    st.session_state.ticker = search_ticker
+    st.cache_data.clear() # 티커 변경 시 캐시 초기화
+    st.rerun()
+
+st.title(f"💡 {st.session_state.ticker} AI 주가 분석 대시보드")
 
 try:
     # 데이터 로딩
-    info, history, peers, news = get_stock_data("NVDA")
-    ai_outlook = get_ai_outlook_analysis()
+    data_load_state = st.text("데이터를 불러오는 중입니다...")
+    data = get_stock_data(st.session_state.ticker)
+    data_load_state.empty()
 
-    if history.empty:
-        st.error("현재 주가 데이터를 가져올 수 없습니다. 장 마감 또는 API 일시적 오류일 수 있습니다.")
+    if data is None:
+        st.error("유효하지 않은 종목 코드이거나 데이터를 가져올 수 없습니다. 코드를 확인 후 다시 시도해주세요.")
     else:
-        # 최상단 핵심 지표
-        latest_price = history['Close'].iloc[-1]
-        previous_close = info.get('previousClose', 0)
-        price_change = latest_price - previous_close
-        percent_change = (price_change / previous_close) * 100 if previous_close else 0
-        valuation = calculate_valuation(info, peers, latest_price)
+        info, history, recs, financials = data
 
-        cols = st.columns([1.5, 1.5, 2.5])
-        # ... (이하 나머지 UI 코드는 이전과 동일) ...
-        with cols[0]:
-            st.metric(
-                label="현재가 (USD)",
-                value=f"${latest_price:,.2f}",
-                delta=f"{price_change:,.2f} ({percent_change:.2f}%)"
-            )
-        with cols[1]:
-            st.metric(
-                label="장중 최고 / 최저",
-                value=f"${history['High'].max():.2f}",
-                delta=f"${history['Low'].min():.2f}"
-            )
-        with cols[2]:
-            st.markdown(f"""
-            <div style="padding: 10px; border-radius: 5px; background-color: {valuation['color']}; color: white;">
-                <span style="font-weight: bold; font-size: 1.1rem;">실시간 주가 평가</span><br>
-                <span style="font-size: 1.5rem; font-weight: bold;">{valuation['verdict']}</span>
-            </div>
-            """, unsafe_allow_html=True)
+        # --- 메인 탭 구성 ---
+        tab1, tab2, tab3, tab4 = st.tabs(["**📊 종합 모니터링**", "**⚖️ 가치 평가 및 전망**", "** financially 재무 분석**", "**📰 최신 뉴스**"])
 
-        st.divider()
-
-        tab1, tab2, tab3 = st.tabs(["**📈 차트 및 가치 평가**", "**🧠 AI 전망 및 기업 정보**", "**📰 최신 뉴스**"])
         with tab1:
-            st.subheader("실시간 주가 차트 (1분봉)")
-            fig = go.Figure(data=[go.Candlestick(x=history.index, open=history['Open'], high=history['High'], low=history['Low'], close=history['Close'])])
-            fig.update_layout(xaxis_rangeslider_visible=False, height=400, margin=dict(l=20, r=20, t=30, b=20))
-            st.plotly_chart(fig, use_container_width=True)
+            # --- 최상단 핵심 지표 ---
+            if not history.empty:
+                latest_price = history['Close'].iloc[-1]
+                previous_close = info.get('previousClose', 0)
+                price_change = latest_price - previous_close
+                percent_change = (price_change / previous_close) * 100 if previous_close else 0
 
-            with st.container(border=True):
-                st.subheader("실시간 가치 평가 상세 근거")
-                st.write("현재 주가를 기준으로 애널리스트 목표가, 성장성(PEG), 동종업체(AMD)와의 PER을 종합하여 판단합니다.")
-                for reason in valuation['reasons']:
-                    st.markdown(f"- {reason}")
+                profitability = check_profitability(info)
+
+                cols = st.columns([1.5, 1.5, 2.5])
+                with cols[0]:
+                    st.metric(label=f"현재가 ({info.get('currency', 'USD')})", value=f"{latest_price:,.2f}", delta=f"{price_change:,.2f} ({percent_change:.2f}%)")
+                with cols[1]:
+                    st.metric(label="52주 최고가 / 최저가", value=f"{info.get('fiftyTwoWeekHigh', 0):,.2f}", delta=f"{info.get('fiftyTwoWeekLow', 0):,.2f}")
+                with cols[2]:
+                    st.markdown(f"""
+                        <div style="padding: 10px; border-radius: 5px; background-color: {profitability['color']}; color: white;">
+                            <span style="font-weight: bold; font-size: 1.1rem;">수익성 진단</span><br>
+                            <span style="font-size: 1.5rem; font-weight: bold;">{profitability['verdict']}</span>
+                        </div>
+                    """, unsafe_allow_html=True)
+
+                st.divider()
+
+                # --- 실시간 차트 (모바일 최적화) ---
+                st.subheader("실시간 주가 차트 (1분봉)")
+                fig = go.Figure(data=[go.Candlestick(x=history.index, open=history['Open'], high=history['High'], low=history['Low'], close=history['Close'])])
+                # 모바일 환경에서 확대/이동 방지
+                fig.update_layout(
+                    xaxis_rangeslider_visible=False,
+                    height=400,
+                    margin=dict(l=20, r=20, t=30, b=20),
+                    dragmode=False,  # 드래그 비활성화
+                    xaxis=dict(fixedrange=True),  # X축 고정
+                    yaxis=dict(fixedrange=True)   # Y축 고정
+                )
+                st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
+                st.info("💡 위 차트는 스마트폰 사용 편의를 위해 확대/축소 및 이동 기능이 비활성화되어 있습니다.")
+
+            else:
+                st.info("장 마감으로 실시간 주가 정보를 표시할 수 없습니다.")
+
         with tab2:
-            st.subheader("AI 산업 전망 및 총평")
-            with st.container(border=True):
-                c1, c2 = st.columns(2)
-                with c1:
-                    st.write("**👍 강점 (Strengths)**")
-                    st.markdown(ai_outlook['strengths'])
-                with c2:
-                    st.write("**👎 리스크 (Risks)**")
-                    st.markdown(ai_outlook['risks'])
-                st.info(f"**총평:** {ai_outlook['summary']}")
+            st.subheader("적정주가 종합 평가")
+            if not history.empty:
+                valuation_summary = calculate_valuation(info, latest_price, recs)
+                st.write(valuation_summary)
+            else:
+                st.warning("장 마감으로 실시간 주가 기준 평가를 제공할 수 없습니다.")
 
-            with st.expander("🏢 **엔비디아 기업 개요 및 주요 재무 정보 보기**"):
-                st.write(info.get('longBusinessSummary', '기업 개요 정보 없음'))
-                st.markdown(f"""
-                - **시가총액:** ${info.get('marketCap', 0):,}
-                - **52주 변동폭:** ${info.get('fiftyTwoWeekLow', 0):,.2f} ~ ${info.get('fiftyTwoWeekHigh', 0):,.2f}
-                - **배당수익률:** {info.get('dividendYield', 0) * 100:.2f}%
-                """)
+            st.divider()
+
+            st.subheader("애널리스트 투자의견 분포")
+            if recs is not None and not recs.empty:
+                recs_summary = recs.tail(25)['To Grade'].value_counts()
+                fig_recs = px.bar(recs_summary, x=recs_summary.index, y=recs_summary.values,
+                                  labels={'x': '투자의견', 'y': '의견 수'},
+                                  title="최근 25개 투자의견 동향", color=recs_summary.index)
+                st.plotly_chart(fig_recs, use_container_width=True)
+            else:
+                st.info("애널리스트 투자의견 데이터가 부족합니다.")
+
+            with st.expander("기업 개요 보기"):
+                 st.write(info.get('longBusinessSummary', '기업 개요 정보가 없습니다.'))
+
         with tab3:
+            st.subheader("핵심 재무 지표 추이")
+            if financials is not None and not financials.empty:
+                # 분기별 매출 및 순이익 차트
+                financials_t = financials.T
+                financials_t.index = pd.to_datetime(financials_t.index).strftime('%Y-%m')
+                fig_fin = go.Figure()
+                fig_fin.add_trace(go.Bar(x=financials_t.index, y=financials_t['Total Revenue'], name='매출 (Revenue)'))
+                fig_fin.add_trace(go.Bar(x=financials_t.index, y=financials_t['Net Income'], name='순이익 (Net Income)'))
+                fig_fin.update_layout(title_text="분기별 매출 및 순이익", barmode='group')
+                st.plotly_chart(fig_fin, use_container_width=True)
+
+                st.write("#### 수익성 진단 상세")
+                for reason in profitability['reasons']:
+                    st.markdown(f"- {reason}")
+            else:
+                st.info("재무 데이터를 가져올 수 없습니다.")
+
+        with tab4:
             st.subheader("관련 최신 뉴스")
-            for item in news[:7]:
-                st.write(f"[{item.get('title', '제목 없음')}]({item.get('link', '#')}) - *{item.get('publisher', '출처 불명')}*")
+            news_list = info.get('news', [])
+            if news_list:
+                for item in news_list[:8]:
+                    st.write(f"[{item.get('title', '제목 없음')}]({item.get('link', '#')}) - *{item.get('publisher', '출처 불명')}*")
+            else:
+                st.info("관련 뉴스가 없습니다.")
 
 except Exception as e:
     st.error(f"앱 실행 중 오류가 발생했습니다: {e}")
-    st.warning("데이터를 불러오지 못했습니다. API 요청 제한 또는 네트워크 문제를 확인해주세요.")
+    st.info("종목 코드를 확인하시거나, 잠시 후 다시 시도해주세요.")
 
-# 사이드바
-st.sidebar.header("⚙️ 설정")
-if st.sidebar.button('🔄 데이터 새로고침'):
-    st.cache_data.clear()
-    st.rerun()
-
+# --- 사이드바 알림 기능 ---
 st.sidebar.markdown("---")
-st.sidebar.header("🔔 가격 알림")
-high_alert = st.sidebar.number_input("고점 알림 가격 ($)", min_value=0.0, format="%.2f")
-low_alert = st.sidebar.number_input("저점 알림 가격 ($)", min_value=0.0, format="%.2f")
+st.sidebar.header("가격 알림 설정")
+high_alert = st.sidebar.number_input("고점 알림 가격", min_value=0.0, format="%.2f")
+low_alert = st.sidebar.number_input("저점 알림 가격", min_value=0.0, format="%.2f")
 
 if 'latest_price' in locals():
     if high_alert > 0 and latest_price >= high_alert:
