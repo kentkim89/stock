@@ -6,10 +6,9 @@ from plotly.subplots import make_subplots
 from datetime import datetime
 import google.generativeai as genai
 from gnews import GNews
-# --- 새로운 라이브러리 임포트 ---
 from streamlit_option_menu import option_menu
-from streamlit_lottie import st_lottie
 from st_aggrid_redux import AgGrid, GridOptionsBuilder
+from streamlit_lottie import st_lottie
 
 # --- 1. 페이지 기본 설정 및 함수 정의 ---
 st.set_page_config(page_title="AI 주가 분석 플랫폼", page_icon="🚀", layout="wide")
@@ -48,7 +47,7 @@ def load_lottie_url(url: str):
     if r.status_code != 200: return None
     return r.json()
 
-# --- AI 분석 생성 함수 (이전 버전과 동일) ---
+# --- AI 분석 생성 함수 ---
 @st.cache_data(ttl=600)
 def generate_ai_analysis(info, data, analysis_type):
     model = genai.GenerativeModel('gemini-1.5-flash')
@@ -62,15 +61,22 @@ def generate_ai_analysis(info, data, analysis_type):
         ma200 = history['Close'].rolling(window=200).mean().iloc[-1]
         prompt = f"""당신은 차트 기술적 분석(CMT) 전문가입니다. **오늘은 {today_date}입니다.** 다음 데이터를 바탕으로 '{company_name}'의 주가 차트를 상세히 분석해주세요.
         - 현재가: {info.get('currentPrice', 'N/A'):.2f}, 50일 이동평균선: {ma50:.2f}, 200일 이동평균선: {ma200:.2f}
-        **분석:** (현재 추세(상승/하락/횡보), 이동평균선의 관계, 주요 지지선 및 저항선, 종합적인 기술적 의견)"""
+        **분석:** (현재 추세, 이동평균선의 관계, 주요 지지/저항선, 종합적인 기술적 의견)"""
     
     elif analysis_type == 'financial':
         financials = data
         latest_date = financials.columns[0].strftime('%Y년 %m월')
-        prompt = f"""당신은 최고재무책임자(CFO)입니다. 다음은 **{latest_date} 기준**의 최신 재무 데이터입니다. 이를 보고 '{company_name}'의 재무 건전성을 분석하고 종합 평가를 내려주세요.
+        prompt = f"""당신은 최고재무책임자(CFO)입니다. 다음은 **{latest_date} 기준**의 최신 재무 데이터입니다. '{company_name}'의 재무 건전성을 분석하고 종합 평가를 내려주세요.
         - **수익성:** 총이익률 {info.get('grossMargins', 0)*100:.2f}%, ROE {info.get('returnOnEquity', 0)*100:.2f}%
         - **안정성:** 부채비율(Debt/Equity) {info.get('debtToEquity', 'N/A')}
-        **AI 재무 진단 리포트:** (각 지표의 의미를 설명하고, 재무적 강점과 약점을 구체적으로 평가한 후, 최종적으로 '매우 우수', '양호', '주의 필요' 등급을 매겨주세요.)"""
+        **AI 재무 진단 리포트:** (각 지표의 의미를 설명하고, 재무적 강점과 약점을 평가한 후, 최종 등급을 매겨주세요.)"""
+
+    elif analysis_type == 'famous_investor':
+        news = data
+        news_headlines = "\n".join([f"- {article['title']}" for article in news]) if news else "관련 뉴스 없음"
+        prompt = f"""당신은 금융 시장 분석가입니다. 구글 뉴스에서 '{company_name}'와 '캐시 우드', '워런 버핏' 등 유명 투자자에 대해 검색된 다음 최신 뉴스 헤드라인을 바탕으로, 이들의 최근 스탠스나 시장의 인식을 요약해주세요.
+        - **검색된 뉴스:**\n{news_headlines}
+        **유명 투자자 동향 브리핑:** (뉴스 내용을 기반으로 사실 위주로 요약하고, 관련 뉴스가 없다면 '최근 직접적인 언급이나 거래 뉴스는 발견되지 않았습니다'라고 명시해주세요.)"""
 
     if not prompt: return "분석 유형 오류"
     try:
@@ -104,15 +110,15 @@ if st.sidebar.button("분석 실행", key="run_button"):
     st.cache_data.clear()
     st.rerun()
 
+# *** 여기가 수정된 부분입니다: 전체 UI 렌더링을 try...except로 감쌉니다. ***
 try:
     info, financials, news = get_stock_data(st.session_state.ticker)
-    if info is None: st.error(f"'{st.session_state.ticker}'에 대한 데이터를 찾을 수 없습니다.")
+    if info is None:
+        st.error(f"'{st.session_state.ticker}'에 대한 데이터를 찾을 수 없습니다.")
     else:
         company_name = info.get('longName', st.session_state.ticker)
         final_verdict, scores, details = get_final_verdict_and_scores(info)
         text_color = final_verdict.get("text_color", "white")
-
-        # --- 상단 헤더 및 내비게이션 메뉴 ---
         lottie_animation = load_lottie_url("https://assets9.lottiefiles.com/packages/lf20_dtrqvxcm.json")
 
         st.markdown(f"""<div style="display: flex; justify-content: space-between; align-items: center;"><h1 style="margin: 0;">🚀 {company_name} AI 분석</h1><div style="padding: 0.5rem 1rem; border-radius: 0.5rem; background-color: {final_verdict['color']}; color: {text_color};"><span style="font-weight: bold; font-size: 1.2rem;">AI 종합 의견: {final_verdict['verdict']}</span></div></div>""", unsafe_allow_html=True)
@@ -126,7 +132,6 @@ try:
         )
         st.markdown("---")
 
-        # --- 페이지별 콘텐츠 ---
         if selected_page == "종합 대시보드":
             st.subheader("📈 주가 및 거래량 차트")
             period_options = {"오늘": "1d", "1주": "5d", "1개월": "1mo", "1년": "1y", "5년": "5y"}
@@ -148,13 +153,12 @@ try:
                 if st.toggle("🤖 AI 심층 차트 분석 보기", key="chart_toggle"):
                     placeholder = st.empty()
                     with placeholder.container():
-                        st_lottie(lottie_animation, height=100)
-                        st.write("AI가 차트를 심층 분석 중입니다...")
+                        st_lottie(lottie_animation, height=100); st.write("AI가 차트를 심층 분석 중입니다...")
                         history_for_ai = get_history(st.session_state.ticker, "1y", "1d")
                         st.session_state.ai_analysis['chart'] = generate_ai_analysis(info, history_for_ai, 'chart')
                     placeholder.empty()
                     if 'chart' in st.session_state.ai_analysis:
-                        st.markdown(st.session_state.ai_analysis['chart'])
+                        with st.container(border=True): st.markdown(st.session_state.ai_analysis['chart'])
             else: st.warning("차트 데이터를 불러올 수 없습니다.")
 
         if selected_page == "재무 & 가치평가":
@@ -169,7 +173,7 @@ try:
             st.divider()
             st.subheader(f"💰 {company_name} 재무 데이터")
             if financials is not None and not financials.empty:
-                fin_summary_df = financials.T.iloc[:4] # 최근 4분기
+                fin_summary_df = financials.T.iloc[:4]
                 gb = GridOptionsBuilder.from_dataframe(fin_summary_df)
                 gb.configure_default_column(cellStyle={'text-align': 'right'})
                 AgGrid(fin_summary_df.reset_index(), gridOptions=gb.build(), theme='streamlit', fit_columns_on_grid_load=True)
@@ -177,12 +181,11 @@ try:
                 if st.toggle("🤖 AI 재무 진단 보기", key="financial_toggle"):
                     placeholder = st.empty()
                     with placeholder.container():
-                        st_lottie(lottie_animation, height=100)
-                        st.write("AI가 재무 데이터를 분석하고 등급을 매기는 중입니다...")
+                        st_lottie(lottie_animation, height=100); st.write("AI가 재무 데이터를 분석하고 등급을 매기는 중입니다...")
                         st.session_state.ai_analysis['financial'] = generate_ai_analysis(info, financials, 'financial')
                     placeholder.empty()
                     if 'financial' in st.session_state.ai_analysis:
-                         st.markdown(st.session_state.ai_analysis['financial'])
+                         with st.container(border=True): st.markdown(st.session_state.ai_analysis['financial'])
             else: st.info("재무 데이터를 가져올 수 없습니다.")
 
         if selected_page == "뉴스 & 시장 동향":
@@ -190,31 +193,32 @@ try:
             if st.toggle("🤖 AI 뉴스 분석 보기", key="news_toggle"):
                 placeholder = st.empty()
                 with placeholder.container():
-                    st_lottie(lottie_animation, height=100)
-                    st.write("AI가 구글 뉴스에서 최신 동향을 분석 중입니다...")
+                    st_lottie(lottie_animation, height=100); st.write("AI가 구글 뉴스에서 최신 동향을 분석 중입니다...")
                     st.session_state.ai_analysis['news'] = generate_ai_analysis(info, news, 'news')
                 placeholder.empty()
-                if 'news' in st.session_state.ai_analysis: st.markdown(st.session_state.ai_analysis['news'])
+                if 'news' in st.session_state.ai_analysis:
+                    with st.container(border=True): st.markdown(st.session_state.ai_analysis['news'])
 
             st.divider()
             st.subheader("💡 유명 투자자 동향 분석 (AI 기반)")
             if st.toggle("🤖 최신 동향 분석 보기", key="famous_toggle"):
                 placeholder = st.empty()
                 with placeholder.container():
-                    st_lottie(lottie_animation, height=100)
-                    st.write("AI가 관련 뉴스를 검색하고 분석 중입니다...")
+                    st_lottie(lottie_animation, height=100); st.write("AI가 관련 뉴스를 검색하고 분석 중입니다...")
                     google_news_famous = GNews(language='ko', country='KR')
                     query = f"{company_name} (워런 버핏 | 캐시 우드 | 낸시 펠로시)"
                     news_famous = google_news_famous.get_news(query)
                     st.session_state.ai_analysis['famous_investor'] = generate_ai_analysis(info, news_famous, 'famous_investor')
                 placeholder.empty()
-                if 'famous_investor' in st.session_state.ai_analysis: st.markdown(st.session_state.ai_analysis['famous_investor'])
+                if 'famous_investor' in st.session_state.ai_analysis:
+                    with st.container(border=True): st.markdown(st.session_state.ai_analysis['famous_investor'])
 
             st.divider()
             st.subheader("📜 관련 최신 뉴스 원문 (From Google News)")
             if news:
-                for article in news[:10]: st.write(f"[{article['title']}]({article['url']}) - *{article['publisher']['title']}*")
+                for article in news[:10]:
+                    st.write(f"[{article['title']}]({article['url']}) - *{article['publisher']['title']}*")
             else: st.info("구글 뉴스에서 관련 뉴스를 찾을 수 없습니다.")
 
 except Exception as e:
-    st.error(f"앱 실행 중 오류가 발생했습니다: {e}")```
+    st.error(f"앱 실행 중 오류가 발생했습니다: {e}")
