@@ -76,22 +76,62 @@ def generate_ai_analysis(info, data, analysis_type):
     except Exception as e: return f"AI 분석 중 오류 발생: {e}"
 
 # --- 가치평가 스코어카드 & 최종 의견 함수 ---
-def get_final_verdict(info):
+def get_final_verdict_and_scores(info):
     scores = {}
+    details = {}
+    
     pe, pb = info.get('trailingPE'), info.get('priceToBook')
-    scores['가치'] = ((4 if 0 < pe <= 15 else 2 if pe <= 25 else 1) if pe else 0) + ((2 if 0 < pb <= 1.5 else 1) if pb else 0)
+    pe_score = (4 if 0 < pe <= 15 else 2 if pe <= 25 else 1) if pe else 0
+    pb_score = (2 if 0 < pb <= 1.5 else 1) if pb else 0
+    scores['가치'] = pe_score + pb_score
+    details['PER'] = f"{pe:.2f}" if pe else "N/A"
+    details['PBR'] = f"{pb:.2f}" if pb else "N/A"
+
     peg, rev_growth = info.get('pegRatio'), info.get('revenueGrowth', 0)
-    scores['성장성'] = ((4 if 0 < peg <= 1 else 2 if peg <= 2 else 0) if peg else 0) + ((4 if rev_growth > 0.2 else 2 if rev_growth > 0.1 else 0))
+    peg_score = (4 if 0 < peg <= 1 else 2 if peg <= 2 else 0) if peg else 0
+    growth_score = (4 if rev_growth > 0.2 else 2 if rev_growth > 0.1 else 0)
+    scores['성장성'] = peg_score + growth_score
+    details['PEG'] = f"{peg:.2f}" if peg else "N/A"
+    details['매출성장률'] = f"{rev_growth*100:.2f}%"
+
     roe, profit_margin = info.get('returnOnEquity', 0), info.get('profitMargins', 0)
-    scores['수익성'] = ((4 if roe > 0.2 else 2 if roe > 0.15 else 0)) + ((4 if profit_margin > 0.2 else 2 if profit_margin > 0.1 else 0))
+    roe_score = (4 if roe > 0.2 else 2 if roe > 0.15 else 0)
+    profit_score = (4 if profit_margin > 0.2 else 2 if profit_margin > 0.1 else 0)
+    scores['수익성'] = roe_score + profit_score
+    details['ROE'] = f"{roe*100:.2f}%"
+    details['순이익률'] = f"{profit_margin*100:.2f}%"
+
     target_price, current_price = info.get('targetMeanPrice'), info.get('currentPrice', 0)
-    scores['애널리스트'] = (4 if (target_price/current_price-1)>0.3 else 2 if (target_price/current_price-1)>0.1 else 1) if target_price and current_price else 0
+    analyst_score = 0
+    if target_price and current_price and current_price > 0:
+        upside = (target_price / current_price - 1)
+        analyst_score = (4 if upside > 0.3 else 2 if upside > 0.1 else 1)
+    scores['애널리스트'] = analyst_score
     
     total_score = sum(scores.values())
-    if total_score >= 18: return {"verdict": "강력 매수", "color": "#198754"}
-    elif total_score >= 12: return {"verdict": "매수 고려", "color": "#0d6efd"}
-    elif total_score < 6: return {"verdict": "투자 주의", "color": "#dc3545"}
-    return {"verdict": "관망", "color": "#ffc107", "text_color": "black"}
+    verdict_info = {"verdict": "관망", "color": "#ffc107", "text_color": "black"}
+    if total_score >= 18: verdict_info = {"verdict": "강력 매수", "color": "#198754"}
+    elif total_score >= 12: verdict_info = {"verdict": "매수 고려", "color": "#0d6efd"}
+    elif total_score < 6: verdict_info = {"verdict": "투자 주의", "color": "#dc3545"}
+    
+    return verdict_info, scores, details
+
+# --- UI 렌더링 함수 ---
+def render_valuation_scorecard(scores, details):
+    with st.container(border=True):
+        st.subheader("⚖️ AI 가치평가 스코어카드")
+        cols = st.columns(4)
+        max_scores = {'가치': 6, '성장성': 8, '수익성': 8, '애널리스트': 4}
+        for i, (cat, score) in enumerate(scores.items()):
+            with cols[i]:
+                fig = go.Figure(go.Indicator(
+                    mode="gauge+number", value=score,
+                    domain={'x': [0, 1], 'y': [0, 1]}, title={'text': cat, 'font': {'size': 16}},
+                    gauge={'axis': {'range': [0, max_scores[cat]]}, 'bar': {'color': "#0d6efd"}}))
+                fig.update_layout(height=150, margin=dict(l=10, r=10, t=40, b=10))
+                st.plotly_chart(fig, use_container_width=True)
+        st.info(f"**상세 지표:** {', '.join([f'{k}: {v}' for k, v in details.items()])}")
+
 
 # --- 2. 앱 UI 렌더링 ---
 st.sidebar.header("종목 검색")
@@ -109,7 +149,7 @@ try:
         st.error(f"'{st.session_state.ticker}'에 대한 데이터를 찾을 수 없습니다.")
     else:
         company_name = info.get('longName', st.session_state.ticker)
-        final_verdict = get_final_verdict(info)
+        final_verdict, scores, details = get_final_verdict_and_scores(info)
         text_color = final_verdict.get("text_color", "white")
 
         st.markdown(f"""
@@ -152,10 +192,10 @@ try:
             else: st.warning("차트 데이터를 불러올 수 없습니다.")
 
         with tab2:
-            st.subheader("⚖️ AI 가치평가 스코어카드")
-            st.write(get_final_verdict.get_valuation_details(info)) # Display valuation details
-
+            # *** 여기가 수정된 부분입니다 ***
+            render_valuation_scorecard(scores, details)
             st.divider()
+
             st.subheader(f"💰 {company_name} 재무 상태 요약")
             fin_cols = st.columns(2)
             with fin_cols[0]:
