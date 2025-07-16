@@ -16,7 +16,7 @@ except (FileNotFoundError, KeyError):
     st.error("오류: Gemini API 키가 설정되지 않았습니다. .streamlit/secrets.toml 파일을 확인하고 Streamlit Cloud에 Secrets를 등록해주세요.")
     st.stop()
 
-# 세션 상태 초기화 (더 많은 AI 분석 결과를 저장하도록 확장)
+# 세션 상태 초기화
 if 'ticker' not in st.session_state: st.session_state.ticker = 'NVDA'
 if 'gemini_briefing' not in st.session_state: st.session_state.gemini_briefing = {}
 if 'analyst_view' not in st.session_state: st.session_state.analyst_view = None
@@ -26,16 +26,18 @@ if 'analyst_view' not in st.session_state: st.session_state.analyst_view = None
 def get_stock_data(ticker):
     stock = yf.Ticker(ticker)
     info = stock.info
-    if not info.get('marketCap'): return None, None, None, None
+    if not info.get('marketCap'): return None, None, None
     financials = stock.quarterly_financials
-    news = stock.news
+    # 뉴스 데이터 안정성 강화: 유효한 뉴스만 필터링
+    raw_news = stock.news
+    news = [item for item in raw_news if item.get('title') and item.get('link')] if raw_news else []
     return info, financials, news
 
 @st.cache_data(ttl=60)
 def get_history(ticker, period, interval):
     return yf.Ticker(ticker).history(period=period, interval=interval)
 
-# --- AI 브리핑 생성 함수 ---
+# --- AI 브리핑 생성 함수 (뉴스 처리 안정화) ---
 @st.cache_data(ttl=600)
 def generate_gemini_briefing(info, history, news, analysis_type):
     model = genai.GenerativeModel('gemini-1.5-flash')
@@ -43,11 +45,14 @@ def generate_gemini_briefing(info, history, news, analysis_type):
     prompt = ""
 
     if analysis_type == '뉴스':
+        if not news: return "분석할 최신 뉴스가 없습니다."
+        # 안전하게 필터링된 뉴스만 사용
         news_headlines = "\n".join([f"- {item['title']}" for item in news[:8]])
         prompt = f"""당신은 금융 뉴스 전문 애널리스트입니다. 다음 최신 뉴스 헤드라인들을 기반으로 '{company_name}'에 대한 시장의 전반적인 분위기와 핵심 이슈를 요약해주세요.
         뉴스 목록:\n{news_headlines}\n\n**분석:**"""
     
     elif analysis_type == '차트':
+        # (이전과 동일)
         ma50 = history['Close'].rolling(window=50).mean().iloc[-1]
         ma200 = history['Close'].rolling(window=200).mean().iloc[-1]
         prompt = f"""당신은 기술적 분석(Technical Analyst) 전문가입니다. 다음 데이터를 바탕으로 '{company_name}'의 현재 주가 차트 상태를 기술적으로 분석해주세요.
@@ -58,6 +63,7 @@ def generate_gemini_briefing(info, history, news, analysis_type):
         **분석 (상승/하락 신호, 지지/저항선 등):**"""
         
     elif analysis_type == '재무':
+        # (이전과 동일)
         prompt = f"""당신은 기업 재무 분석 전문가입니다. 다음 핵심 재무 지표를 바탕으로 '{company_name}'의 최근 재무 건전성과 수익성을 간단하게 평가해주세요.
         - 총이익률(Gross Margins): {info.get('grossMargins', 0)*100:.2f}%
         - 영업이익률(Operating Margins): {info.get('operatingMargins', 0)*100:.2f}%
@@ -65,17 +71,22 @@ def generate_gemini_briefing(info, history, news, analysis_type):
         - 현금흐름(Operating Cashflow): ${info.get('operatingCashflow', 0):,}
         **분석:**"""
 
+    if not prompt: return "분석 유형이 올바르지 않습니다."
     try:
         response = model.generate_content(prompt)
         return response.text
     except Exception as e: return f"AI 분석 중 오류 발생: {e}"
 
-# --- AI 생성 애널리스트 시각 함수 ---
+# --- AI 생성 애널리스트 시각 함수 (뉴스 처리 안정화) ---
 @st.cache_data(ttl=600)
 def generate_synthesized_analyst_view(info, news):
     model = genai.GenerativeModel('gemini-1.5-flash')
     company_name = info.get('longName', '해당 기업')
-    news_summary = "\n".join([f"- {item['title']}" for item in news[:5]])
+    
+    news_summary = "최신 뉴스가 없습니다."
+    if news:
+        news_summary = "\n".join([f"- {item['title']}" for item in news[:5]])
+
     prompt = f"""당신은 월스트리트의 유능한 금융 애널리스트입니다. 다음 데이터를 **종합적으로 해석**하여 '{company_name}'에 대한 애널리스트 리포트 형식의 의견을 제시해주세요. **실시간 검색이 아닌, 제공된 데이터 기반으로 추론하세요.**
     - **핵심 데이터:**
       - 애널리스트 평균 목표가: ${info.get('targetMeanPrice', 'N/A')} / 현재가: ${info.get('currentPrice', 'N/A')}
@@ -89,8 +100,7 @@ def generate_synthesized_analyst_view(info, news):
 
 # --- 가치평가 스코어카드 렌더링 함수 ---
 def render_valuation_scorecard(info):
-    scores, details = {}, {}
-    # (이전 버전의 평가 로직은 그대로 사용)
+    scores = {}
     pe, pb = info.get('trailingPE'), info.get('priceToBook')
     pe_score = (4 if 0 < pe <= 15 else 2 if pe <= 25 else 1) if pe else 0
     pb_score = (2 if 0 < pb <= 1.5 else 1) if pb else 0
@@ -153,14 +163,17 @@ try:
             briefing_cols = st.columns(3)
             with briefing_cols[0]:
                 if st.button("📰 최신 뉴스 분석"):
-                    st.session_state.gemini_briefing['news'] = generate_gemini_briefing(info, None, news, '뉴스')
+                    with st.spinner("AI가 뉴스를 분석 중입니다..."):
+                        st.session_state.gemini_briefing['news'] = generate_gemini_briefing(info, None, news, '뉴스')
             with briefing_cols[1]:
                 history_1y = get_history(st.session_state.ticker, "1y", "1d")
                 if st.button("📊 주가 차트 분석"):
-                     st.session_state.gemini_briefing['chart'] = generate_gemini_briefing(info, history_1y, None, '차트')
+                     with st.spinner("AI가 차트를 분석 중입니다..."):
+                        st.session_state.gemini_briefing['chart'] = generate_gemini_briefing(info, history_1y, None, '차트')
             with briefing_cols[2]:
                 if st.button("💰 핵심 재무 분석"):
-                    st.session_state.gemini_briefing['financials'] = generate_gemini_briefing(info, None, None, '재무')
+                    with st.spinner("AI가 재무를 분석 중입니다..."):
+                        st.session_state.gemini_briefing['financials'] = generate_gemini_briefing(info, None, None, '재무')
 
             if st.session_state.gemini_briefing:
                 st.markdown("---")
@@ -229,14 +242,20 @@ try:
             st.divider()
             st.subheader("📰 원본 뉴스 목록")
             if news:
-                for item in news[:8]:
-                    st.write(f"[{item.get('title', '제목 없음')}]({item.get('link', '#')}) - *{item.get('publisher', '출처 불명')}*")
-            else: st.info("관련 뉴스가 없습니다.")
+                for item in news:
+                    # 안전하게 title과 link를 가져오고, 없으면 건너뜀
+                    title = item.get('title')
+                    link = item.get('link')
+                    publisher = item.get('publisher', '출처 불명')
+                    if title and link:
+                        st.write(f"[{title}]({link}) - *{publisher}*")
+            else:
+                st.info("관련 뉴스가 없습니다.")
 
 except Exception as e:
     st.error(f"앱 실행 중 예상치 못한 오류가 발생했습니다: {e}")
 
-# 사이드바 알림 기능 (생략하지 않음)
+# 사이드바 알림 기능
 st.sidebar.markdown("---")
 st.sidebar.header("가격 알림 설정")
 high_alert = st.sidebar.number_input("고점 알림 가격", min_value=0.0, format="%.2f", key="high_alert")
