@@ -36,22 +36,23 @@ def get_stock_data(ticker):
 def get_history(ticker, period, interval):
     return yf.Ticker(ticker).history(period=period, interval=interval)
 
-# --- AI 분석 생성 함수 (모든 AI 분석 통합) ---
+# --- AI 분석 생성 함수 (모든 AI 분석 통합 및 날짜 명시) ---
 @st.cache_data(ttl=600)
 def generate_ai_analysis(info, data, analysis_type):
     model = genai.GenerativeModel('gemini-1.5-flash')
     company_name = info.get('longName', '해당 기업')
+    today_date = datetime.now().strftime('%Y년 %m월 %d일')
     prompt = ""
 
     if analysis_type == 'chart':
         history = data
         ma50 = history['Close'].rolling(window=50).mean().iloc[-1]
         ma200 = history['Close'].rolling(window=200).mean().iloc[-1]
-        prompt = f"""당신은 차트 기술적 분석(CMT) 전문가입니다. 다음 데이터를 바탕으로 '{company_name}'의 주가 차트를 상세히 분석해주세요.
+        prompt = f"""당신은 차트 기술적 분석(CMT) 전문가입니다. **오늘은 {today_date}입니다.** 다음 데이터를 바탕으로 '{company_name}'의 주가 차트를 상세히 분석해주세요.
         - 현재가: {info.get('currentPrice', 'N/A'):.2f}
         - 50일 이동평균선: {ma50:.2f}
         - 200일 이동평균선: {ma200:.2f}
-        **분석:** (현재 추세(상승/하락/횡보), 이동평균선의 관계(골든크로스/데드크로스 등), 주요 지지선 및 저항선, 종합적인 기술적 의견)"""
+        **분석:** (현재 추세(상승/하락/횡보), 이동평균선의 관계, 주요 지지선 및 저항선, 종합적인 기술적 의견)"""
     
     elif analysis_type == 'financial':
         financials = data
@@ -64,16 +65,20 @@ def generate_ai_analysis(info, data, analysis_type):
     elif analysis_type == 'news':
         news = data
         news_headlines = "\n".join([f"- {article['title']}" for article in news[:7]]) if news else "관련 뉴스 없음"
-        prompt = f"""당신은 금융 시장 분석가입니다. 다음은 구글 뉴스에서 수집된 '{company_name}' 관련 최신 뉴스 헤드라인입니다. 이를 바탕으로 현재 시장의 분위기와 핵심 이슈를 요약해주세요.
+        prompt = f"""당신은 금융 시장 분석가입니다. **오늘은 {today_date}입니다.** 다음은 구글 뉴스에서 수집된 '{company_name}' 관련 최신 뉴스 헤드라인입니다. 이를 바탕으로 현재 시장의 분위기와 핵심 이슈를 요약해주세요.
         - **최신 뉴스:**\n{news_headlines}
         **뉴스 요약 및 시장 분위기 분석:** (긍정적, 부정적, 중립적 요소를 구분하여 분석하고, 현재 투자자들이 가장 주목하는 이슈가 무엇인지 설명해주세요.)"""
 
-    elif analysis_type == 'famous_investor':
-        news = data
-        news_headlines = "\n".join([f"- {article['title']}" for article in news]) if news else "관련 뉴스 없음"
-        prompt = f"""당신은 금융 정보 분석가입니다. 구글 뉴스에서 '{company_name}'와 '캐시 우드', '워런 버핏', '낸시 펠로시'에 대해 검색된 다음 최신 뉴스 헤드라인을 바탕으로, 이들의 최근 스탠스나 시장의 인식을 요약해주세요.
-        - **검색된 뉴스:**\n{news_headlines}
-        **유명 투자자 동향 브리핑:** (뉴스 내용을 기반으로 사실 위주로 요약하고, 만약 관련 뉴스가 없다면 '최근 직접적인 언급이나 거래 뉴스는 발견되지 않았습니다'라고 명시해주세요.)"""
+    elif analysis_type == 'verdict':
+        scores, details = data
+        prompt = f"""당신은 최고 투자 책임자(CIO)입니다. **오늘은 {today_date}입니다.** '{company_name}'에 대한 아래의 모든 정량적, 정성적 분석 결과를 종합하여, 최종 투자 의견과 그 이유를 명확하게 서술해주세요.
+        - **AI 가치평가 스코어카드:**
+          - 가치: {scores['가치']}/6, 성장성: {scores['성장성']}/8, 수익성: {scores['수익성']}/8, 애널리스트: {scores['애널리스트']}/4
+        - **주요 지표:**
+          - {', '.join([f'{k}: {v}' for k, v in details.items()])}
+        
+        **최종 투자 의견 및 전략:**
+        (서론-본론-결론 형식으로, 모든 분석을 종합하여 최종 투자 등급('강력 매수', '매수 고려', '관망', '투자 주의' 중 하나)을 결정하고, 왜 그렇게 판단했는지에 대한 핵심적인 이유와 투자 전략을 논리적으로 설명해주세요.)"""
 
     if not prompt: return "분석 유형 오류"
     try:
@@ -82,7 +87,7 @@ def generate_ai_analysis(info, data, analysis_type):
     except Exception as e: return f"AI 분석 중 오류 발생: {e}"
 
 # --- 가치평가 스코어카드 & 최종 의견 함수 ---
-def get_final_verdict_and_scores(info):
+def get_valuation_scores(info):
     scores, details = {}, {}
     pe, pb = info.get('trailingPE'), info.get('priceToBook')
     scores['가치'] = ((4 if 0 < pe <= 15 else 2 if pe <= 25 else 1) if pe else 0) + ((2 if 0 < pb <= 1.5 else 1) if pb else 0)
@@ -95,12 +100,7 @@ def get_final_verdict_and_scores(info):
     details['ROE'] = f"{roe*100:.2f}%"; details['순이익률'] = f"{profit_margin*100:.2f}%"
     target_price, current_price = info.get('targetMeanPrice'), info.get('currentPrice', 0)
     scores['애널리스트'] = (4 if (target_price/current_price-1)>0.3 else 2 if (target_price/current_price-1)>0.1 else 1) if target_price and current_price and current_price > 0 else 0
-    total_score = sum(scores.values())
-    verdict_info = {"verdict": "관망", "color": "#ffc107", "text_color": "black"}
-    if total_score >= 18: verdict_info = {"verdict": "강력 매수", "color": "#198754"}
-    elif total_score >= 12: verdict_info = {"verdict": "매수 고려", "color": "#0d6efd"}
-    elif total_score < 6: verdict_info = {"verdict": "투자 주의", "color": "#dc3545"}
-    return verdict_info, scores, details
+    return scores, details
 
 # --- 2. 앱 UI 렌더링 ---
 st.sidebar.header("종목 검색")
@@ -116,14 +116,23 @@ try:
     if info is None: st.error(f"'{st.session_state.ticker}'에 대한 데이터를 찾을 수 없습니다.")
     else:
         company_name = info.get('longName', st.session_state.ticker)
-        final_verdict, scores, details = get_final_verdict_and_scores(info)
-        text_color = final_verdict.get("text_color", "white")
-
-        st.markdown(f"""<div style="display: flex; justify-content: space-between; align-items: center;"><h1 style="margin: 0;">🚀 {company_name} AI 분석</h1><div style="padding: 0.5rem 1rem; border-radius: 0.5rem; background-color: {final_verdict['color']}; color: {text_color};"><span style="font-weight: bold; font-size: 1.2rem;">AI 종합 의견: {final_verdict['verdict']}</span></div></div>""", unsafe_allow_html=True)
+        scores, details = get_valuation_scores(info)
+        
+        st.markdown(f"<h1 style='margin-bottom:0;'>🚀 {company_name} AI 분석</h1>", unsafe_allow_html=True)
         st.caption(f"종목코드: {st.session_state.ticker} | 마지막 업데이트: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+
+        with st.container(border=True):
+            st.subheader("🤖 AI 종합 투자 의견")
+            if st.toggle("AI 최종 의견 보기", key="verdict_toggle"):
+                with st.spinner("AI가 모든 데이터를 종합하여 최종 투자 의견을 생성 중입니다..."):
+                    st.session_state.ai_analysis['verdict'] = generate_ai_analysis(info, (scores, details), 'verdict')
+                if 'verdict' in st.session_state.ai_analysis:
+                    st.markdown(st.session_state.ai_analysis['verdict'])
+            else:
+                st.info("스위치를 켜면 제미나이 AI가 모든 분석을 종합하여 최종 투자 의견을 제시합니다.")
         st.markdown("---")
         
-        tab1, tab2, tab3 = st.tabs(["**📊 종합 대시보드 및 차트 분석**", "**📂 재무 및 가치평가**", "**💡 뉴스 및 시장 동향**"])
+        tab1, tab2, tab3 = st.tabs(["**📊 대시보드 및 차트 분석**", "**📂 재무 및 가치평가**", "**💡 뉴스 및 시장 동향**"])
 
         with tab1:
             st.subheader("📈 주가 및 거래량 차트")
@@ -147,8 +156,7 @@ try:
                     with st.spinner("AI가 차트를 심층 분석 중입니다..."):
                         history_for_ai = get_history(st.session_state.ticker, "1y", "1d")
                         st.session_state.ai_analysis['chart'] = generate_ai_analysis(info, history_for_ai, 'chart')
-                    if 'chart' in st.session_state.ai_analysis:
-                        st.markdown(st.session_state.ai_analysis['chart'])
+                    if 'chart' in st.session_state.ai_analysis: st.markdown(st.session_state.ai_analysis['chart'])
             else: st.warning("차트 데이터를 불러올 수 없습니다.")
 
         with tab2:
