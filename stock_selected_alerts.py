@@ -54,7 +54,8 @@ def get_stock_data(tickers, rsi_period, sma_short=50, sma_long=200):
                 prev_volume = hist['Volume'].iloc[-2]
                 current_volume = hist['Volume'].iloc[-1]
                 volume_change = (current_volume - prev_volume) / prev_volume * 100 if prev_volume != 0 else 0
-                rsi = calculate_rsi(hist, rsi_period).iloc[-1] if not calculate_rsi(hist, rsi_period).empty else np.nan
+                rsi_series = calculate_rsi(hist, rsi_period)
+                rsi = rsi_series.iloc[-1] if not rsi_series.empty else np.nan
                 sma50 = calculate_sma(hist, sma_short).iloc[-1]
                 sma200 = calculate_sma(hist, sma_long).iloc[-1]
                 data[ticker] = {
@@ -209,7 +210,7 @@ with tab1:
 with tab2:
     st.subheader("포트폴리오 관리")
     if not portfolio:
-        st.info("포트폴리오 티커 입력 (S&P 500만 지원).")
+        st.info("포트폴리오 티커를 입력하세요 (e.g., AAPL, TSLA).")
     elif not df.empty:
         portfolio_df = df.loc[[t for t in portfolio if t in df.index]]
         if not portfolio_df.empty:
@@ -239,8 +240,11 @@ with tab3:
         st.pyplot(fig)
 
         st.subheader("차트 요약")
-        current_rsi = rsi.iloc[-1] if not rsi.empty else np.nan
-        current_rsi_str = f"{current_rsi:.2f}" if pd.notnull(current_rsi) else "N/A (데이터 부족)"
+        if not rsi.empty:
+            current_rsi = rsi.iloc[-1]
+            current_rsi_str = f"{current_rsi:.2f}" if pd.notnull(current_rsi) else "N/A (데이터 부족)"
+        else:
+            current_rsi_str = "N/A (데이터 부족)"
         st.write(f"{selected_ticker} 가격 추세: SMA 크로스오버와 RSI 확인. 현재 RSI: {current_rsi_str}")
 
 st.markdown("---")
