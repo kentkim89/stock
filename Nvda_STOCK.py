@@ -21,31 +21,25 @@ except (FileNotFoundError, KeyError):
 if 'ticker' not in st.session_state: st.session_state.ticker = 'NVDA'
 if 'ai_analysis' not in st.session_state: st.session_state.ai_analysis = {}
 
-# --- 데이터 로딩 함수 (핵심 개선) ---
-@st.cache_data(ttl=86400) # 24시간 동안 캐시 유지
+# --- 데이터 로딩 함수 ---
+@st.cache_data(ttl=86400)
 def get_latest_tickers():
     """NASDAQ 서버에서 최신 주식 및 ETF 목록을 직접 다운로드합니다."""
     try:
-        # NASDAQ 상장 종목
         nasdaq_df = pd.read_csv("ftp://ftp.nasdaqtrader.com/symboldirectory/nasdaqlisted.txt", sep='|')
-        # NYSE 등 기타 상장 종목
         other_df = pd.read_csv("ftp://ftp.nasdaqtrader.com/symboldirectory/otherlisted.txt", sep='|')
         
-        # 필요한 컬럼만 선택하고 합치기
         nasdaq_tickers = nasdaq_df[['Symbol', 'Security Name']]
         other_tickers = other_df[['ACT Symbol', 'Security Name']]
         other_tickers.rename(columns={'ACT Symbol': 'Symbol'}, inplace=True)
         
-        # 두 데이터프레임 합치기
         all_tickers = pd.concat([nasdaq_tickers, other_tickers]).dropna()
-        
-        # 불필요한 종목 제거 (테스트, 워런트 등)
         all_tickers = all_tickers[~all_tickers['Symbol'].str.contains('\$')]
         all_tickers = all_tickers[~all_tickers['Symbol'].str.contains('\.')]
         
         all_tickers.rename(columns={'Security Name': 'Name'}, inplace=True)
         all_tickers['display'] = all_tickers['Symbol'] + " - " + all_tickers['Name']
-        return all_tickers.sort_values(by='Symbol')
+        return all_tickers.sort_values(by='Symbol').reset_index(drop=True) # 인덱스 초기화
     except Exception as e:
         st.error(f"최신 종목 목록을 불러오는 데 실패했습니다: {e}")
         return None
@@ -103,14 +97,21 @@ def get_valuation_scores(info):
 
 # --- 2. 앱 UI 렌더링 ---
 st.sidebar.header("종목 검색")
-ticker_data = get_latest_tickers() # CSV 대신 새로운 함수 호출
+ticker_data = get_latest_tickers()
 if ticker_data is not None:
-    # 검색 기능이 있는 selectbox
+    # --- 여기가 수정된 부분입니다 ---
+    default_index = 0
+    if st.session_state.ticker in ticker_data['Symbol'].values:
+        # 인덱스를 찾고, 순수 int로 변환합니다.
+        default_index = int(ticker_data[ticker_data['Symbol'] == st.session_state.ticker].index[0])
+
     selected_display = st.sidebar.selectbox("종목 선택 (이름 또는 코드로 검색)", 
         options=ticker_data['display'], 
-        index=ticker_data[ticker_data['Symbol'] == st.session_state.ticker].index[0] if st.session_state.ticker in ticker_data['Symbol'].values else 0,
+        index=default_index, # 안전하게 변환된 정수 인덱스 사용
         key="ticker_select"
     )
+    # --- 여기까지 수정 ---
+    
     selected_ticker = ticker_data[ticker_data['display'] == selected_display]['Symbol'].iloc[0]
     if selected_ticker != st.session_state.ticker:
         st.session_state.ticker = selected_ticker
