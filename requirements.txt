@@ -1,7 +1,10 @@
---python-version=3.11
-streamlit
-pandas
-plotly
-yfinance
-google-generativeai
-gnews
+streamlit==1.35.0
+pandas==2.1.0
+plotly==5.18.0
+yfinance==0.2.37
+google-generativeai==0.5.4
+gnews==0.3.0
+streamlit-option-menu==0.3.6
+streamlit-aggrid-redux==0.0.9
+streamlit-lottie==0.0.5
+requests==2.31.0
